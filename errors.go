@@ -53,9 +53,11 @@ func (e *baseError) TracebackString() string {
 	return e.handle.Display("traceback", false)
 }
 
-// SyntaxError is raised for parse or compile failures.
+// SyntaxError is raised for parse or compile failures. Its last frame locates
+// the offending source.
 type SyntaxError struct {
 	baseError
+	Frames []Frame
 }
 
 // RuntimeError is raised for runtime failures and exposes traceback frames.
@@ -98,7 +100,7 @@ func newError(err *ffi.Error) error {
 
 	switch summary.Kind {
 	case "syntax":
-		return &SyntaxError{baseError: base}
+		return &SyntaxError{baseError: base, Frames: summary.Traceback}
 	case "typing":
 		return &TypingError{baseError: base}
 	case "runtime", "api":

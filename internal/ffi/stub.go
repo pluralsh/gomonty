@@ -60,7 +60,7 @@ func (*Error) Close() {}
 // JSON returns a synthetic API error payload.
 func (e *Error) JSON() []byte {
 	payload := map[string]any{
-		"version":   1,
+		"version":   2,
 		"kind":      "api",
 		"type_name": "RuntimeError",
 		"message":   e.message,
@@ -154,3 +154,42 @@ func (*Progress) ResumeLookup([]byte) OpResult {
 func (*Progress) ResumeFutures([]byte) OpResult {
 	return OpResult{Error: unavailableError()}
 }
+
+// ResumeOS returns an unavailable error on unsupported targets.
+func (*Progress) ResumeOS(*MountTable, bool) (OpResult, bool) {
+	return OpResult{Error: unavailableError()}, false
+}
+
+// Mount is the unsupported-target stub for a mount handle.
+type Mount struct{}
+
+// MountResult wraps mount construction results.
+type MountResult struct {
+	Mount *Mount
+	Error *Error
+}
+
+// NewMount returns an unavailable error on unsupported targets.
+func NewMount([]byte) MountResult {
+	return MountResult{Error: unavailableError()}
+}
+
+// Close releases the stub mount handle.
+func (*Mount) Close() {}
+
+// MountTable is the unsupported-target stub for a mount table handle.
+type MountTable struct{}
+
+// MountTableResult wraps mount table construction results.
+type MountTableResult struct {
+	Table *MountTable
+	Error *Error
+}
+
+// NewMountTable returns an unavailable error on unsupported targets.
+func NewMountTable([]*Mount) MountTableResult {
+	return MountTableResult{Error: unavailableError()}
+}
+
+// Close releases the stub mount table handle.
+func (*MountTable) Close() {}

@@ -11,7 +11,7 @@
 /**
  * Current schema version for the Go FFI.
  */
-#define WIRE_VERSION 1
+#define WIRE_VERSION 2
 
 #define WIRE_VALUE_NONE 0
 
@@ -83,6 +83,16 @@
  * Opaque error handle for the Go bindings.
  */
 typedef struct MontyGoError MontyGoError;
+
+/**
+ * Opaque mount handle for the Go bindings.
+ */
+typedef struct MontyGoMount MontyGoMount;
+
+/**
+ * Opaque per-run mount table handle for the Go bindings.
+ */
+typedef struct MontyGoMountTable MontyGoMountTable;
 
 /**
  * Opaque progress handle for the Go bindings.
@@ -166,6 +176,34 @@ typedef struct MontyGoReplResult {
    */
   struct MontyGoError *error;
 } MontyGoReplResult;
+
+/**
+ * Result of mount construction.
+ */
+typedef struct MontyGoMountResult {
+  /**
+   * Created mount handle on success.
+   */
+  struct MontyGoMount *mount;
+  /**
+   * Error handle on failure.
+   */
+  struct MontyGoError *error;
+} MontyGoMountResult;
+
+/**
+ * Result of mount table construction.
+ */
+typedef struct MontyGoMountTableResult {
+  /**
+   * Created mount table handle on success.
+   */
+  struct MontyGoMountTable *table;
+  /**
+   * Error handle on failure.
+   */
+  struct MontyGoError *error;
+} MontyGoMountTableResult;
 
 #ifdef __cplusplus
 extern "C" {
@@ -256,6 +294,32 @@ void monty_go_progress_resume_futures(struct MontyGoProgress *progress,
                                       const uint8_t *results_ptr,
                                       uintptr_t results_len,
                                       struct MontyGoOpResult *out);
+
+void monty_go_mount_new(const uint8_t *options_ptr,
+                        uintptr_t options_len,
+                        struct MontyGoMountResult *out);
+
+void monty_go_mount_free(struct MontyGoMount *mount);
+
+void monty_go_mount_table_new(const struct MontyGoMount *const *mounts,
+                              uintptr_t mounts_len,
+                              struct MontyGoMountTableResult *out);
+
+void monty_go_mount_table_free(struct MontyGoMountTable *table);
+
+/**
+ * Serves the paused OS call from `table`, which may be null.
+ *
+ * When no mount covers the call it is answered with the upstream no-handler
+ * exception (`PermissionError` for filesystem calls) if `default_on_miss` is
+ * set; otherwise `handled` stays false, `out` stays empty, and the progress
+ * is left untouched for the host to answer.
+ */
+void monty_go_progress_resume_os(struct MontyGoProgress *progress,
+                                 const struct MontyGoMountTable *table,
+                                 bool default_on_miss,
+                                 bool *handled,
+                                 struct MontyGoOpResult *out);
 
 #ifdef __cplusplus
 }  // extern "C"

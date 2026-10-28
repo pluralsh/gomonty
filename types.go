@@ -137,14 +137,31 @@ type Function struct {
 
 // Dataclass is the explicit host-side dataclass value shape.
 //
+// Inside Monty a dataclass is an instance of a class identified by ClassID,
+// with its own InstanceID. Leave both empty for new host values: the bindings
+// derive a stable ClassID from Name and TypeID and assign a random InstanceID.
+// Values returned by Monty carry the IDs Monty assigned, so passing them back
+// in preserves their identity.
+//
 // Methods are host-only metadata and are intentionally omitted from the wire
 // format so Rust never stores Go function pointers or opaque Go values.
+// Monty routes a method call to Methods by InstanceID, so it is only answered
+// for dataclasses passed into the same Run or FeedRun call (as inputs or
+// callback results).
 type Dataclass struct {
-	Name       string                   `json:"name"`
-	TypeID     uint64                   `json:"type_id"`
-	FieldNames []string                 `json:"field_names"`
-	Attrs      Dict                     `json:"attrs"`
-	Frozen     bool                     `json:"frozen"`
+	Name       string   `json:"name"`
+	TypeID     uint64   `json:"type_id"`
+	FieldNames []string `json:"field_names"`
+	Attrs      Dict     `json:"attrs"`
+	// Frozen is kept for compatibility; Monty 1.4 does not enforce it on
+	// host-defined classes.
+	Frozen     bool   `json:"frozen"`
+	ClassID    string `json:"class_id,omitempty"`
+	InstanceID string `json:"instance_id,omitempty"`
+	// SandboxClass marks instances of a class defined by sandbox code.
+	SandboxClass bool `json:"sandbox_class,omitempty"`
+	// PlainClass marks instances of a class that is not a dataclass.
+	PlainClass bool                     `json:"plain_class,omitempty"`
 	Methods    map[string]MethodHandler `json:"-"`
 }
 
@@ -156,12 +173,15 @@ type Exception struct {
 }
 
 // Call describes an external function or method invocation from Monty.
+//
+// For method calls, Args[0] is the receiver and ObjectID is its InstanceID.
 type Call struct {
 	FunctionName string
 	Args         []Value
 	Kwargs       Dict
 	CallID       uint32
 	IsMethodCall bool
+	ObjectID     string
 }
 
 // OSFunction names a host OS callback that Monty requested.
@@ -186,6 +206,23 @@ const (
 	OSPathAbsolute   OSFunction = "Path.absolute"
 	OSGetenv         OSFunction = "os.getenv"
 	OSGetEnviron     OSFunction = "os.environ"
+
+	// OSPathScan serves os.walk, os.scandir, Path.glob, and Path.rglob.
+	OSPathScan        OSFunction = "Path.scan"
+	OSPathAppendText  OSFunction = "Path.append_text"
+	OSPathAppendBytes OSFunction = "Path.append_bytes"
+	OSOpen            OSFunction = "open"
+	OSUrandom         OSFunction = "os.urandom"
+	OSTime            OSFunction = "time.time"
+	OSDateToday       OSFunction = "date.today"
+	OSDateTimeNow     OSFunction = "datetime.now"
+	OSImport          OSFunction = "import"
+	OSImportStubs     OSFunction = "import_stubs"
+	// OSSystemSleep and OSSystemAsyncSleep are answered by the bindings, which
+	// wait for the requested delay (capped by Monty at 10s) honoring the
+	// context; they never reach an OSHandler.
+	OSSystemSleep      OSFunction = "system.sleep"
+	OSSystemAsyncSleep OSFunction = "system.async_sleep"
 )
 
 // OSCall describes an OS-level callback requested by Monty.
@@ -267,8 +304,15 @@ func Pending(waiter Waiter) Result {
 //
 // A zero field value leaves that limit unset.
 type ResourceLimits struct {
-	MaxAllocations    int
-	MaxDuration       time.Duration
+	// Deprecated: MaxAllocations is ignored; Monty 1.4 removed allocation
+	// counting in favor of MaxMemory.
+	MaxAllocations int
+	// MaxDuration bounds the sandbox execution time of one run or feed,
+	// excluding time spent suspended in host callbacks.
+	MaxDuration time.Duration
+	// MaxMemory bounds the native library's live heap in bytes. Monty measures
+	// it process-wide, so every concurrent run and idle REPL in the process
+	// counts toward each run's limit.
 	MaxMemory         int
 	GCInterval        int
 	MaxRecursionDepth int
@@ -286,12 +330,18 @@ type CompileOptions struct {
 type StartOptions struct {
 	Inputs map[string]Value
 	Limits *ResourceLimits
+	// Cwd is the absolute virtual directory relative paths resolve against.
+	// It defaults to "/".
+	Cwd string
 }
 
 // ReplOptions configures REPL construction.
 type ReplOptions struct {
 	ScriptName string
 	Limits     *ResourceLimits
+	// Cwd is the absolute virtual directory relative paths resolve against.
+	// It defaults to "/".
+	Cwd string
 }
 
 // FeedStartOptions configures low-level REPL snippet execution.
@@ -303,17 +353,30 @@ type FeedStartOptions struct {
 type RunOptions struct {
 	Inputs    map[string]Value
 	Functions map[string]ExternalFunction
-	OS        OSHandler
-	Print     PrintCallback
-	Limits    *ResourceLimits
+	// OS answers OS calls no mount covers. Without it, those calls raise
+	// Monty's default errors: PermissionError for filesystem calls,
+	// ModuleNotFoundError for imports, and RuntimeError otherwise.
+	OS     OSHandler
+	Print  PrintCallback
+	Limits *ResourceLimits
+	// Mounts expose host directories to the run. See MountDir.
+	Mounts []*MountDir
+	// Cwd is the absolute virtual directory relative paths resolve against.
+	// It defaults to "/".
+	Cwd string
 }
 
 // FeedOptions configures the high-level REPL helper loop.
 type FeedOptions struct {
 	Inputs    map[string]Value
 	Functions map[string]ExternalFunction
-	OS        OSHandler
-	Print     PrintCallback
+	// OS answers OS calls no mount covers. Without it, those calls raise
+	// Monty's default errors: PermissionError for filesystem calls,
+	// ModuleNotFoundError for imports, and RuntimeError otherwise.
+	OS    OSHandler
+	Print PrintCallback
+	// Mounts expose host directories to this feed. See MountDir.
+	Mounts []*MountDir
 }
 
 // None returns the Python None value.
@@ -875,19 +938,11 @@ func (v Value) MarshalJSON() ([]byte, error) {
 	case valueKindDataclass:
 		payload := v.data.(Dataclass)
 		return json.Marshal(struct {
-			Kind       ValueKind `json:"kind"`
-			Name       string    `json:"name"`
-			TypeID     uint64    `json:"type_id"`
-			FieldNames []string  `json:"field_names"`
-			Attrs      Dict      `json:"attrs"`
-			Frozen     bool      `json:"frozen"`
+			Kind ValueKind `json:"kind"`
+			Dataclass
 		}{
-			Kind:       valueKindDataclass,
-			Name:       payload.Name,
-			TypeID:     payload.TypeID,
-			FieldNames: payload.FieldNames,
-			Attrs:      payload.Attrs,
-			Frozen:     payload.Frozen,
+			Kind:      valueKindDataclass,
+			Dataclass: payload,
 		})
 	case valueKindFunction:
 		payload := v.data.(Function)

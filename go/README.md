@@ -5,6 +5,7 @@
 - runner and REPL APIs
 - high-level host callback dispatch for external functions
 - low-level pause/resume snapshots
+- native host-directory mounts backed by upstream `monty-fs` (`monty.NewMountDir`)
 - a typed OS/filesystem callback surface in `github.com/ewhauser/gomonty/vfs`
 
 ## Status
@@ -107,6 +108,54 @@ run()
 }
 ```
 
+## Mounting Host Directories
+
+`monty.NewMountDir` exposes a host directory at a virtual path inside the
+sandbox. Filesystem calls under that path are served natively by upstream
+`monty-fs` (no Go callback per call), with path traversal and symlink escapes
+confined to the mounted directory.
+
+```go
+mount, err := monty.NewMountDir("/repo", "/srv/checkout", monty.MountDirOptions{
+	Mode: monty.MountReadOnly,
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer mount.Close()
+
+value, err := runner.Run(ctx, monty.RunOptions{
+	Mounts: []*monty.MountDir{mount},
+	Cwd:    "/repo",
+})
+```
+
+`FeedOptions.Mounts` does the same for `Repl.FeedRun`.
+
+Modes:
+
+- `monty.MountReadOnly`: writes raise `PermissionError`
+- `monty.MountReadWrite`: writes go to the host directory
+- `monty.MountOverlay` (default): writes are kept in memory and discarded when
+  the `Run` / `FeedRun` call returns
+
+`MountDirOptions.WriteBytesLimit` caps bytes written per run. A `MountDir` can
+be shared by concurrent runs; each run gets its own mount table, so overlay
+state and write limits never leak between runs. Mounts may not overlap.
+
+Equivalents of common read/walk helpers:
+
+| Lua-style helper | Monty |
+| --- | --- |
+| `fs.read(path)` | `Path(path).read_text()` / `open(path).read()` |
+| `fs.walk(root)` | `os.walk(root)` / `Path(root).rglob('*')` |
+
+Filesystem calls outside every mount fall through to `RunOptions.OS` when it is
+set. Without an OS handler they raise `PermissionError`; `import` of an
+unknown module raises `ModuleNotFoundError`, and other OS calls raise
+`RuntimeError`. `time.sleep` / `asyncio.sleep` are served by gomonty itself
+(capped at 10s per call and cancelled with the run's context).
+
 ## Custom Filesystem From Go
 
 If you want Monty code to use a Go-defined filesystem, implement `vfs.FileSystem` and pass it through `vfs.Handler(...)`.
@@ -145,6 +194,8 @@ value, err := runner.Run(ctx, monty.RunOptions{
 ```
 
 `vfs.Handler` maps common Go filesystem errors into Python-style exceptions such as `FileNotFoundError`.
+It does not implement `open()` or directory scanning (`os.walk`, `glob`); use
+`monty.NewMountDir` when scripts need those.
 
 ## Values and Results
 
@@ -194,6 +245,22 @@ Then:
 
 The helper loop will wait for the result and resume Monty automatically.
 
+## Dataclass Methods
+
+Dataclass inputs that set `Methods` are callable from Monty. Method calls are
+dispatched to `Functions[methodName]` with the receiver prepended to `Args`
+and `Call.ObjectID` set to its `InstanceID`. Receivers are routed by
+`InstanceID`, which gomonty assigns automatically and which is only valid
+within the `Run` / `FeedRun` that produced it. `Frozen` is not enforced by
+Monty 1.4.
+
+## Resource Limits
+
+- `MaxDuration` applies per feed and excludes time spent in host callbacks.
+- `MaxMemory` is enforced by a process-wide allocator, so it measures heap
+  growth in the whole native library rather than one run in isolation.
+- `MaxAllocations` is ignored; upstream Monty no longer supports it.
+
 ## Low-Level Pause/Resume API
 
 If you want full control over dispatch, use `Start` / `FeedStart` directly.
@@ -227,7 +294,10 @@ Snapshots and runners are serializable with:
 - `Runner.Dump()` / `LoadRunner(...)`
 - `Snapshot.Dump()` / `LoadSnapshot(...)`
 - `LoadReplSnapshot(...)`
-- `Repl.Dump()`
+- `Repl.Dump()` / `LoadRepl(...)`
+
+`Runner.Close()` and `Repl.Close()` release native handles eagerly; otherwise
+they are released by finalizers.
 
 ## Errors
 
@@ -236,5 +306,8 @@ Monty errors are returned as typed Go errors:
 - `*monty.SyntaxError`
 - `*monty.RuntimeError`
 - `*monty.TypingError`
+
+`SyntaxError.Frames` and `RuntimeError.Frames` carry structured locations; the
+last syntax frame points at the offending source line and column.
 
 Host callback errors returned as ordinary Go `error` values are converted to runtime exceptions unless you return an explicit `monty.Raise(...)`.

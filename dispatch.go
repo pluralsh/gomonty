@@ -4,12 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
+
+	"github.com/ewhauser/gomonty/internal/ffi"
 )
 
 type dispatchConfig struct {
 	functions map[string]ExternalFunction
 	os        OSHandler
 	print     PrintCallback
+	mounts    *ffi.MountTable
+	objects   *hostObjects
 }
 
 type restorableProgress interface {
@@ -33,10 +38,24 @@ func dispatchLoop(ctx context.Context, progress Progress, cfg dispatchConfig) (V
 		case *Complete:
 			return current.Output, nil
 		case *Snapshot:
+			if current.IsOSFunction {
+				next, handled, err := dispatchOSCall(ctx, current, cfg)
+				if err != nil {
+					if !handled {
+						return Value{}, restoreProgressOwner(current, err)
+					}
+					return Value{}, err
+				}
+				if handled {
+					progress = next
+					continue
+				}
+			}
 			result, err := dispatchSnapshot(ctx, current, cfg)
 			if err != nil {
 				return Value{}, restoreProgressOwner(current, err)
 			}
+			result = cfg.objects.prepareResult(result)
 
 			switch {
 			case result.wirePending():
@@ -89,11 +108,50 @@ func dispatchLoop(ctx context.Context, progress Progress, cfg dispatchConfig) (V
 	}
 }
 
+// dispatchOSCall answers OS calls the bindings own: system sleeps, mounted
+// filesystem calls, and (without an OS handler) Monty's default errors. It
+// reports false when the call should go to the OS handler instead.
+func dispatchOSCall(ctx context.Context, snapshot *Snapshot, cfg dispatchConfig) (Progress, bool, error) {
+	switch OSFunction(snapshot.FunctionName) {
+	case OSSystemSleep, OSSystemAsyncSleep:
+		if err := sleepFor(ctx, snapshot.Args); err != nil {
+			return nil, false, err
+		}
+		next, err := snapshot.progressBase.resumeCall(ctx, mustMarshalCallResult(callResultPayload{
+			Kind:  "return",
+			Value: None(),
+		}), cfg.print)
+		return next, true, err
+	}
+	if cfg.mounts == nil && cfg.os != nil {
+		return nil, false, nil
+	}
+	return snapshot.progressBase.resumeOS(ctx, cfg.mounts, cfg.os == nil, cfg.print)
+}
+
+func sleepFor(ctx context.Context, args []Value) error {
+	var seconds float64
+	if len(args) > 0 {
+		seconds, _ = args[0].Raw().(float64)
+	}
+	if seconds <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(time.Duration(seconds * float64(time.Second)))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfig) (Result, error) {
 	if snapshot.IsOSFunction {
 		if cfg.os == nil {
-			message := fmt.Sprintf("OS function %s called but no OS handler was provided", snapshot.FunctionName)
-			return Raise(Exception{Type: "NotImplementedError", Arg: &message}), nil
+			message := fmt.Sprintf("'%s' is not supported in this environment", snapshot.FunctionName)
+			return Raise(Exception{Type: "RuntimeError", Arg: &message}), nil
 		}
 		return normalizeCallbackResult(cfg.os(ctx, OSCall{
 			Function: OSFunction(snapshot.FunctionName),
@@ -104,26 +162,23 @@ func dispatchSnapshot(ctx context.Context, snapshot *Snapshot, cfg dispatchConfi
 	}
 
 	if snapshot.IsMethodCall {
-		if len(snapshot.Args) == 0 {
-			message := "method call is missing its receiver"
-			return Raise(Exception{Type: "TypeError", Arg: &message}), nil
-		}
-		selfValue, ok := snapshot.Args[0].Dataclass()
+		self, ok := cfg.objects.lookup(snapshot.ObjectID)
 		if !ok {
-			message := fmt.Sprintf("method call %s expected dataclass self", snapshot.FunctionName)
-			return Raise(Exception{Type: "TypeError", Arg: &message}), nil
+			message := fmt.Sprintf("object has no method %q", snapshot.FunctionName)
+			return Raise(Exception{Type: "AttributeError", Arg: &message}), nil
 		}
-		handler, ok := selfValue.Methods[snapshot.FunctionName]
+		handler, ok := self.Methods[snapshot.FunctionName]
 		if !ok {
-			message := fmt.Sprintf("%s has no method %q", selfValue.Name, snapshot.FunctionName)
+			message := fmt.Sprintf("%s has no method %q", self.Name, snapshot.FunctionName)
 			return Raise(Exception{Type: "AttributeError", Arg: &message}), nil
 		}
 		return normalizeCallbackResult(handler(ctx, Call{
 			FunctionName: snapshot.FunctionName,
-			Args:         snapshot.Args,
+			Args:         append([]Value{DataclassValue(self)}, snapshot.Args...),
 			Kwargs:       snapshot.Kwargs,
 			CallID:       snapshot.CallID,
 			IsMethodCall: true,
+			ObjectID:     snapshot.ObjectID,
 		}))
 	}
 

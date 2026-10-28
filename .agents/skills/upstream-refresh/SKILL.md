@@ -79,14 +79,26 @@ gh api 'repos/pydantic/monty/contents/crates/monty/src/object.rs?ref=main' \
 
 ## Step 3: Bump the upstream pin
 
-Update both `rev` values in `Cargo.toml` (they must stay aligned):
+Update every upstream `rev` in the root `Cargo.toml` (`monty`, `monty-types`,
+`monty-fs`, `monty-alloc`, `monty-type-checking`); they must stay aligned:
 
 ```toml
 monty = { git = "https://github.com/pydantic/monty.git", rev = "<full-sha>" }
-monty_type_checking = { git = "https://github.com/pydantic/monty.git", package = "monty_type_checking", rev = "<full-sha>" }
+monty-types = { git = "https://github.com/pydantic/monty.git", rev = "<full-sha>" }
+# ...same rev for monty-fs, monty-alloc, monty-type-checking
 ```
 
 Use the **full 40-character SHA** — Cargo will fail to resolve truncated SHAs.
+Also match upstream's `rust-version`. If `cargo fetch` hits version conflicts,
+start from upstream's `Cargo.lock` at the same rev.
+
+Since 1.4, `MontyObject` is graph based: `wire.rs` reads values through
+`ObjectRef` / `MontyNode` (`monty_types::unstable`) and builds them with the
+`MontyObject` constructor helpers rather than matching enum variants. Types
+without a dedicated wire kind fall back to `WIRE_VALUE_REPR` via `py_repr()`.
+Mounts live in `crates/monty-go-ffi/src/mount.rs` and route OS calls through
+`monty_fs::MountTable::handle_os_call`; check upstream `monty-pool` for the
+reference usage when `monty-fs` changes.
 
 ## Step 4: Update the Rust wire format
 
@@ -119,7 +131,7 @@ Add any needed zero-check helper functions (`is_zero_*`), but check for duplicat
 
 Add match arms in both directions:
 
-- `from_monty`: converts `MontyObject` -> `WireValue` (serialization, Rust to Go)
+- `from_ref`: converts an `ObjectRef` -> `WireValue` (serialization, Rust to Go)
 - `into_monty`: converts `WireValue` -> `MontyObject` (deserialization, Go to Rust)
 
 For output-only types (like `Repr` or `Cycle`), `into_monty` should return an error since they can't be used as inputs.
@@ -325,4 +337,6 @@ release assets. The release assets remain optional convenience copies.
 - **Duplicate helpers**: Before adding `is_zero_*` functions in `wire.rs`, check if one already exists — the compiler will reject duplicates.
 - **Wire constant ordering**: Go uses `iota` so constants must be in the same order as the Rust numeric values. Never renumber existing constants.
 - **WireValue field reuse**: The `TimeZone` type reuses the `days` wire field for `offset_seconds` and `timezone_name` for `name`. This is intentional to keep the struct flat. When adding new types, check if existing fields can serve double duty before adding new ones.
+- **Byte fields**: annotate every `Vec<u8>` wire field with `with = "serde_bytes"`. Without it rmp-serde emits an integer array, which Go's `[]byte` decoder rejects.
+- **Stale library copy**: `scripts/build-go-ffi.sh` copies from `./target`. If `CARGO_TARGET_DIR` is set, copy the artifact from that directory instead.
 - **Optional vs zero**: Rust `Option<T>` maps to Go `*T` (pointer). A zero value and an absent value are different — use pointer types for fields where `None` carries distinct meaning from the zero value.

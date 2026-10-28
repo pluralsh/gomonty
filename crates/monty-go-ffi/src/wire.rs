@@ -7,12 +7,16 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use monty::{ExcType, MontyDate, MontyDateTime, MontyException, MontyObject, MontyTimeDelta, MontyTimeZone, ResourceLimits, StackFrame};
+use monty_types::{
+    DEFAULT_MAX_RECURSION_DEPTH, ExcType, MontyDate, MontyDateTime, MontyException, MontyObject,
+    MontyTimeDelta, MontyTimeZone, MontyUuid, ObjectRef, ResourceLimits, StackFrame,
+    unstable::{self, MontyNode},
+};
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
 /// Current schema version for the Go FFI.
-pub const WIRE_VERSION: u32 = 1;
+pub const WIRE_VERSION: u32 = 2;
 
 pub const WIRE_VALUE_NONE: u8 = 0;
 pub const WIRE_VALUE_ELLIPSIS: u8 = 1;
@@ -70,7 +74,7 @@ pub struct WireValue {
     pub float_value: f64,
     #[serde(default, skip_serializing_if = "String::is_empty", rename = "string")]
     pub string_value: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "serde_bytes")]
     pub bytes: Vec<u8>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<WireValue>,
@@ -92,12 +96,8 @@ pub struct WireValue {
     pub arg: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
-    #[serde(default, skip_serializing_if = "is_zero_u64", rename = "type_id")]
-    pub type_id: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attrs: Vec<WirePair>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub frozen: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docstring: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -126,149 +126,127 @@ pub struct WireValue {
     pub seconds: i32,
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub microseconds: i32,
+    /// Class uuid of a dataclass (class instance) value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "serde_bytes")]
+    pub class_id: Vec<u8>,
+    /// Instance uuid of a dataclass (class instance) value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "serde_bytes")]
+    pub instance_id: Vec<u8>,
+    /// Set for instances of a class defined by sandbox code rather than the host.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sandbox_class: bool,
+    /// Set for instances of a class that is not a dataclass.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub plain_class: bool,
 }
 
 impl WireValue {
     #[must_use]
     pub fn from_monty(obj: &MontyObject) -> Self {
-        match obj {
-            MontyObject::None => Self {
-                kind: WIRE_VALUE_NONE,
-                ..Self::default()
-            },
-            MontyObject::Ellipsis => Self {
-                kind: WIRE_VALUE_ELLIPSIS,
-                ..Self::default()
-            },
-            MontyObject::Bool(value) => Self {
-                kind: WIRE_VALUE_BOOL,
+        Self::from_ref(obj.as_ref())
+    }
+
+    #[must_use]
+    pub fn from_ref(value: ObjectRef<'_>) -> Self {
+        let children = |ids: &[unstable::NodeId]| -> Vec<Self> {
+            ids.iter()
+                .map(|id| Self::from_ref(unstable::child(value, *id)))
+                .collect()
+        };
+        let pairs = |ids: &[(unstable::NodeId, unstable::NodeId)]| -> Vec<WirePair> {
+            ids.iter()
+                .map(|(key, item)| WirePair {
+                    key: Self::from_ref(unstable::child(value, *key)),
+                    value: Self::from_ref(unstable::child(value, *item)),
+                })
+                .collect()
+        };
+        match unstable::node(value) {
+            MontyNode::None => Self::of(WIRE_VALUE_NONE),
+            MontyNode::Ellipsis => Self::of(WIRE_VALUE_ELLIPSIS),
+            MontyNode::Bool(value) => Self {
                 bool: *value,
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_BOOL)
             },
-            MontyObject::Int(value) => Self {
-                kind: WIRE_VALUE_INT,
+            MontyNode::Int(value) => Self {
                 int_value: *value,
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_INT)
             },
-            MontyObject::BigInt(value) => Self {
-                kind: WIRE_VALUE_BIG_INT,
+            MontyNode::BigInt(value) => Self {
                 big_int: value.to_string(),
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_BIG_INT)
             },
-            MontyObject::Float(value) => Self {
-                kind: WIRE_VALUE_FLOAT,
+            MontyNode::Float(value) => Self {
                 float_value: *value,
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_FLOAT)
             },
-            MontyObject::String(value) => Self {
-                kind: WIRE_VALUE_STRING,
+            MontyNode::String(value) => Self {
                 string_value: value.clone(),
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_STRING)
             },
-            MontyObject::Bytes(value) => Self {
-                kind: WIRE_VALUE_BYTES,
+            MontyNode::Bytes(value) => Self {
                 bytes: value.clone(),
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_BYTES)
             },
-            MontyObject::List(items) => Self {
-                kind: WIRE_VALUE_LIST,
-                items: items.iter().map(Self::from_monty).collect(),
-                ..Self::default()
+            MontyNode::List(ids) => Self {
+                items: children(ids),
+                ..Self::of(WIRE_VALUE_LIST)
             },
-            MontyObject::Tuple(items) => Self {
-                kind: WIRE_VALUE_TUPLE,
-                items: items.iter().map(Self::from_monty).collect(),
-                ..Self::default()
+            MontyNode::Tuple(ids) => Self {
+                items: children(ids),
+                ..Self::of(WIRE_VALUE_TUPLE)
             },
-            MontyObject::NamedTuple {
+            MontyNode::Set(ids) => Self {
+                items: children(ids),
+                ..Self::of(WIRE_VALUE_SET)
+            },
+            MontyNode::FrozenSet(ids) => Self {
+                items: children(ids),
+                ..Self::of(WIRE_VALUE_FROZEN_SET)
+            },
+            MontyNode::NamedTuple {
                 type_name,
                 field_names,
                 values,
             } => Self {
-                kind: WIRE_VALUE_NAMED_TUPLE,
                 type_name: type_name.clone(),
                 field_names: field_names.clone(),
-                values: values.iter().map(Self::from_monty).collect(),
-                ..Self::default()
+                values: children(values),
+                ..Self::of(WIRE_VALUE_NAMED_TUPLE)
             },
-            MontyObject::Dict(items) => Self {
-                kind: WIRE_VALUE_DICT,
-                pairs: items
-                    .into_iter()
-                    .map(|(key, value)| WirePair {
-                        key: Self::from_monty(key),
-                        value: Self::from_monty(value),
-                    })
-                    .collect(),
-                ..Self::default()
+            MontyNode::Dict(ids) => Self {
+                pairs: pairs(ids),
+                ..Self::of(WIRE_VALUE_DICT)
             },
-            MontyObject::Set(items) => Self {
-                kind: WIRE_VALUE_SET,
-                items: items.iter().map(Self::from_monty).collect(),
-                ..Self::default()
-            },
-            MontyObject::FrozenSet(items) => Self {
-                kind: WIRE_VALUE_FROZEN_SET,
-                items: items.iter().map(Self::from_monty).collect(),
-                ..Self::default()
-            },
-            MontyObject::Exception { exc_type, arg } => Self {
-                kind: WIRE_VALUE_EXCEPTION,
+            MontyNode::Exception { exc_type, arg } => Self {
                 exc_type: exc_type.to_string(),
                 arg: arg.clone(),
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_EXCEPTION)
             },
-            MontyObject::Path(value) => Self {
-                kind: WIRE_VALUE_PATH,
+            MontyNode::Path(value) => Self {
                 string_value: value.clone(),
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_PATH)
             },
-            MontyObject::Dataclass {
-                name,
-                type_id,
-                field_names,
-                attrs,
-                frozen,
-            } => Self {
-                kind: WIRE_VALUE_DATACLASS,
-                name: name.clone(),
-                type_id: *type_id,
-                field_names: field_names.clone(),
-                attrs: attrs
-                    .into_iter()
-                    .map(|(key, value)| WirePair {
-                        key: Self::from_monty(key),
-                        value: Self::from_monty(value),
-                    })
-                    .collect(),
-                frozen: *frozen,
-                ..Self::default()
-            },
-            MontyObject::Function { name, docstring } => Self {
-                kind: WIRE_VALUE_FUNCTION,
+            MontyNode::Function { name, docstring } => Self {
                 name: name.clone(),
                 docstring: docstring.clone(),
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_FUNCTION)
             },
-            MontyObject::Repr(value) => Self {
-                kind: WIRE_VALUE_REPR,
+            MontyNode::Repr(value) => Self {
                 string_value: value.clone(),
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_REPR)
             },
-            MontyObject::Cycle(_, placeholder) => Self {
-                kind: WIRE_VALUE_CYCLE,
+            MontyNode::Cycle(placeholder) => Self {
                 placeholder: placeholder.clone(),
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_CYCLE)
             },
-            MontyObject::Date(date) => Self {
-                kind: WIRE_VALUE_DATE,
+            MontyNode::Date(date) => Self {
                 year: date.year,
                 month: date.month,
                 day: date.day,
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_DATE)
             },
-            MontyObject::DateTime(datetime) => Self {
-                kind: WIRE_VALUE_DATETIME,
+            MontyNode::DateTime(datetime) => Self {
                 year: datetime.year,
                 month: datetime.month,
                 day: datetime.day,
@@ -278,119 +256,136 @@ impl WireValue {
                 microsecond: datetime.microsecond,
                 offset_seconds: datetime.offset_seconds,
                 timezone_name: datetime.timezone_name.clone(),
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_DATETIME)
             },
-            MontyObject::TimeDelta(delta) => Self {
-                kind: WIRE_VALUE_TIMEDELTA,
+            MontyNode::TimeDelta(delta) => Self {
                 days: delta.days,
                 seconds: delta.seconds,
                 microseconds: delta.microseconds,
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_TIMEDELTA)
             },
-            MontyObject::TimeZone(tz) => Self {
-                kind: WIRE_VALUE_TIMEZONE,
+            MontyNode::TimeZone(tz) => Self {
                 days: tz.offset_seconds,
                 timezone_name: tz.name.clone(),
-                ..Self::default()
+                ..Self::of(WIRE_VALUE_TIMEZONE)
             },
-            MontyObject::Type(value) => Self {
-                kind: WIRE_VALUE_REPR,
-                string_value: format!("<class '{value}'>"),
-                ..Self::default()
-            },
-            MontyObject::BuiltinFunction(value) => Self {
-                kind: WIRE_VALUE_REPR,
-                string_value: format!("<built-in function {value}>"),
-                ..Self::default()
-            },
+            MontyNode::ClassInstance {
+                class_type,
+                instance_id,
+                attrs,
+            } => {
+                let MontyNode::ClassType(class) = unstable::node(unstable::child(value, *class_type))
+                else {
+                    return Self::repr(value);
+                };
+                let attrs = pairs(attrs);
+                Self {
+                    name: class.name.clone(),
+                    field_names: attrs
+                        .iter()
+                        .filter(|pair| pair.key.kind == WIRE_VALUE_STRING)
+                        .map(|pair| pair.key.string_value.clone())
+                        .collect(),
+                    attrs,
+                    class_id: class.id.as_bytes().to_vec(),
+                    instance_id: instance_id.as_bytes().to_vec(),
+                    sandbox_class: !class.host_defined,
+                    plain_class: !class.is_dataclass,
+                    ..Self::of(WIRE_VALUE_DATACLASS)
+                }
+            }
+            MontyNode::NotImplemented
+            | MontyNode::Complex(_)
+            | MontyNode::Time(_)
+            | MontyNode::Decimal(_)
+            | MontyNode::Type(_)
+            | MontyNode::BuiltinFunction(_)
+            | MontyNode::FileHandle(_)
+            | MontyNode::ClassType(_)
+            | MontyNode::Module { .. } => Self::repr(value),
+        }
+    }
+
+    fn of(kind: u8) -> Self {
+        Self {
+            kind,
+            ..Self::default()
+        }
+    }
+
+    fn repr(value: ObjectRef<'_>) -> Self {
+        Self {
+            string_value: value.py_repr(),
+            ..Self::of(WIRE_VALUE_REPR)
         }
     }
 
     pub fn into_monty(self) -> Result<MontyObject, String> {
+        fn all(items: Vec<WireValue>) -> Result<Vec<MontyObject>, String> {
+            items.into_iter().map(WireValue::into_monty).collect()
+        }
+        fn all_pairs(pairs: Vec<WirePair>) -> Result<Vec<(MontyObject, MontyObject)>, String> {
+            pairs
+                .into_iter()
+                .map(|pair| Ok((pair.key.into_monty()?, pair.value.into_monty()?)))
+                .collect()
+        }
+
         match self.kind {
-            WIRE_VALUE_NONE => Ok(MontyObject::None),
-            WIRE_VALUE_ELLIPSIS => Ok(MontyObject::Ellipsis),
-            WIRE_VALUE_BOOL => Ok(MontyObject::Bool(self.bool)),
-            WIRE_VALUE_INT => Ok(MontyObject::Int(self.int_value)),
+            WIRE_VALUE_NONE => Ok(MontyObject::none()),
+            WIRE_VALUE_ELLIPSIS => Ok(MontyObject::ellipsis()),
+            WIRE_VALUE_BOOL => Ok(MontyObject::bool(self.bool)),
+            WIRE_VALUE_INT => Ok(MontyObject::int(self.int_value)),
             WIRE_VALUE_BIG_INT => self
                 .big_int
                 .parse::<BigInt>()
-                .map(MontyObject::BigInt)
+                .map(MontyObject::bigint)
                 .map_err(|e| format!("invalid bigint: {e}")),
-            WIRE_VALUE_FLOAT => Ok(MontyObject::Float(self.float_value)),
-            WIRE_VALUE_STRING => Ok(MontyObject::String(self.string_value)),
-            WIRE_VALUE_BYTES => Ok(MontyObject::Bytes(self.bytes)),
-            WIRE_VALUE_LIST => Ok(MontyObject::List(
-                self.items
-                    .into_iter()
-                    .map(Self::into_monty)
-                    .collect::<Result<Vec<_>, _>>()?,
+            WIRE_VALUE_FLOAT => Ok(MontyObject::float(self.float_value)),
+            WIRE_VALUE_STRING => Ok(MontyObject::string(self.string_value)),
+            WIRE_VALUE_BYTES => Ok(MontyObject::bytes(self.bytes)),
+            WIRE_VALUE_LIST => Ok(MontyObject::list(all(self.items)?)),
+            WIRE_VALUE_TUPLE => Ok(MontyObject::tuple(all(self.items)?)),
+            WIRE_VALUE_NAMED_TUPLE => Ok(MontyObject::named_tuple(
+                self.type_name,
+                self.field_names,
+                all(self.values)?,
             )),
-            WIRE_VALUE_TUPLE => Ok(MontyObject::Tuple(
-                self.items
-                    .into_iter()
-                    .map(Self::into_monty)
-                    .collect::<Result<Vec<_>, _>>()?,
-            )),
-            WIRE_VALUE_NAMED_TUPLE => Ok(MontyObject::NamedTuple {
-                type_name: self.type_name,
-                field_names: self.field_names,
-                values: self
-                    .values
-                    .into_iter()
-                    .map(Self::into_monty)
-                    .collect::<Result<Vec<_>, _>>()?,
-            }),
-            WIRE_VALUE_DICT => Ok(MontyObject::dict(
-                self.pairs
-                    .into_iter()
-                    .map(|pair| Ok((pair.key.into_monty()?, pair.value.into_monty()?)))
-                    .collect::<Result<Vec<_>, String>>()?,
-            )),
-            WIRE_VALUE_SET => Ok(MontyObject::Set(
-                self.items
-                    .into_iter()
-                    .map(Self::into_monty)
-                    .collect::<Result<Vec<_>, _>>()?,
-            )),
-            WIRE_VALUE_FROZEN_SET => Ok(MontyObject::FrozenSet(
-                self.items
-                    .into_iter()
-                    .map(Self::into_monty)
-                    .collect::<Result<Vec<_>, _>>()?,
-            )),
-            WIRE_VALUE_EXCEPTION => Ok(MontyObject::Exception {
-                exc_type: self
-                    .exc_type
-                    .parse()
+            WIRE_VALUE_DICT => Ok(MontyObject::dict(all_pairs(self.pairs)?)),
+            WIRE_VALUE_SET => Ok(MontyObject::set(all(self.items)?)),
+            WIRE_VALUE_FROZEN_SET => Ok(MontyObject::frozenset(all(self.items)?)),
+            WIRE_VALUE_EXCEPTION => Ok(MontyObject::exception(
+                self.exc_type
+                    .parse::<ExcType>()
                     .map_err(|_| format!("unknown exception type: {}", self.exc_type))?,
-                arg: self.arg,
-            }),
-            WIRE_VALUE_PATH => Ok(MontyObject::Path(self.string_value)),
-            WIRE_VALUE_DATACLASS => Ok(MontyObject::Dataclass {
-                name: self.name,
-                type_id: self.type_id,
-                field_names: self.field_names,
-                attrs: self
-                    .attrs
-                    .into_iter()
-                    .map(|pair| Ok((pair.key.into_monty()?, pair.value.into_monty()?)))
-                    .collect::<Result<Vec<_>, String>>()?
-                    .into(),
-                frozen: self.frozen,
-            }),
-            WIRE_VALUE_FUNCTION => Ok(MontyObject::Function {
-                name: self.name,
-                docstring: self.docstring,
-            }),
+                self.arg,
+            )),
+            WIRE_VALUE_PATH => Ok(MontyObject::path(self.string_value)),
+            WIRE_VALUE_DATACLASS => {
+                let class_id = parse_uuid(&self.class_id, "class_id")?;
+                let instance_id = parse_uuid(&self.instance_id, "instance_id")?;
+                let class_type = MontyObject::class_type(
+                    self.name,
+                    class_id,
+                    !self.sandbox_class,
+                    !self.plain_class,
+                    Vec::new(),
+                );
+                Ok(MontyObject::class_instance(
+                    class_type,
+                    instance_id,
+                    all_pairs(self.attrs)?,
+                ))
+            }
+            WIRE_VALUE_FUNCTION => Ok(MontyObject::function(self.name, self.docstring)),
             WIRE_VALUE_REPR => Err("repr values cannot be used as Monty inputs".to_owned()),
             WIRE_VALUE_CYCLE => Err("cycle placeholders cannot be used as Monty inputs".to_owned()),
-            WIRE_VALUE_DATE => Ok(MontyObject::Date(MontyDate {
+            WIRE_VALUE_DATE => Ok(MontyObject::date(MontyDate {
                 year: self.year,
                 month: self.month,
                 day: self.day,
             })),
-            WIRE_VALUE_DATETIME => Ok(MontyObject::DateTime(MontyDateTime {
+            WIRE_VALUE_DATETIME => Ok(MontyObject::datetime(MontyDateTime {
                 year: self.year,
                 month: self.month,
                 day: self.day,
@@ -401,18 +396,23 @@ impl WireValue {
                 offset_seconds: self.offset_seconds,
                 timezone_name: self.timezone_name,
             })),
-            WIRE_VALUE_TIMEDELTA => Ok(MontyObject::TimeDelta(MontyTimeDelta {
+            WIRE_VALUE_TIMEDELTA => Ok(MontyObject::timedelta(MontyTimeDelta {
                 days: self.days,
                 seconds: self.seconds,
                 microseconds: self.microseconds,
             })),
-            WIRE_VALUE_TIMEZONE => Ok(MontyObject::TimeZone(MontyTimeZone {
+            WIRE_VALUE_TIMEZONE => Ok(MontyObject::timezone(MontyTimeZone {
                 offset_seconds: self.days,
                 name: self.timezone_name,
             })),
             other => Err(format!("unknown wire value kind: {other}")),
         }
     }
+}
+
+fn parse_uuid(bytes: &[u8], field: &str) -> Result<MontyUuid, String> {
+    MontyUuid::try_from_slice(bytes)
+        .ok_or_else(|| format!("dataclass {field} must be 16 bytes, got {}", bytes.len()))
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -434,8 +434,6 @@ pub struct WireResourceLimits {
     #[serde(default = "default_wire_version")]
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_allocations: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_duration_secs: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_memory: Option<usize>,
@@ -447,13 +445,15 @@ pub struct WireResourceLimits {
 
 impl From<WireResourceLimits> for ResourceLimits {
     fn from(value: WireResourceLimits) -> Self {
-        let mut limits = ResourceLimits::new();
-        limits.max_allocations = value.max_allocations;
-        limits.max_duration = value.max_duration_secs.map(Duration::from_secs_f64);
-        limits.max_memory = value.max_memory;
-        limits.gc_interval = value.gc_interval;
-        limits.max_recursion_depth = value.max_recursion_depth;
-        limits
+        Self {
+            max_feed_duration: value.max_duration_secs.map(Duration::from_secs_f64),
+            max_memory: value.max_memory,
+            gc_interval: value.gc_interval,
+            max_recursion_depth: value
+                .max_recursion_depth
+                .unwrap_or(DEFAULT_MAX_RECURSION_DEPTH),
+            ..Self::default()
+        }
     }
 }
 
@@ -465,6 +465,8 @@ pub struct WireStartOptions {
     pub inputs: BTreeMap<String, WireValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<WireResourceLimits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -475,6 +477,8 @@ pub struct WireReplOptions {
     pub script_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<WireResourceLimits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -483,6 +487,18 @@ pub struct WireFeedOptions {
     pub version: u32,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, WireValue>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WireMountOptions {
+    #[serde(default = "default_wire_version")]
+    pub version: u32,
+    pub virtual_path: String,
+    pub host_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_bytes_limit: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -532,6 +548,9 @@ pub struct WireProgressPayload {
     pub kwargs: Vec<WirePair>,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub call_id: u32,
+    /// Receiver uuid for method calls on host or sandbox class instances.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "serde_bytes")]
+    pub object_id: Vec<u8>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub variable_name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -555,12 +574,12 @@ impl From<&StackFrame> for WireFrame {
     fn from(value: &StackFrame) -> Self {
         Self {
             filename: value.filename.clone(),
-            line: u32::from(value.start.line),
-            column: u32::from(value.start.column),
-            end_line: u32::from(value.end.line),
-            end_column: u32::from(value.end.column),
+            line: value.start.line,
+            column: value.start.column,
+            end_line: value.end.line,
+            end_column: value.end.column,
             function_name: value.frame_name.clone(),
-            source_line: value.preview_line.clone(),
+            source_line: value.preview_line.as_deref().map(str::to_owned),
         }
     }
 }
@@ -607,10 +626,6 @@ const fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
-const fn is_zero_u64(value: &u64) -> bool {
-    *value == 0
-}
-
 const fn is_zero_i64(value: &i64) -> bool {
     *value == 0
 }
@@ -629,63 +644,80 @@ const fn is_zero_u8(value: &u8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use monty_types::{
+        ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone, MontyUuid,
+    };
     use num_bigint::BigInt;
 
-    use super::WireValue;
-    use monty::{ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
+    use super::{WIRE_VALUE_DATACLASS, WIRE_VALUE_REPR, WireValue};
+
+    fn round_trip(original: &MontyObject) -> MontyObject {
+        WireValue::from_monty(original)
+            .into_monty()
+            .expect("wire value should round-trip")
+    }
 
     #[test]
     fn wire_value_round_trips_nested_dicts() {
         let original = MontyObject::dict(vec![
             (
-                MontyObject::String("numbers".to_owned()),
-                MontyObject::List(vec![
-                    MontyObject::Int(1),
-                    MontyObject::BigInt(BigInt::from(1_u64) << 80),
+                MontyObject::string("numbers"),
+                MontyObject::list(vec![
+                    MontyObject::int(1),
+                    MontyObject::bigint(BigInt::from(1_u64) << 80),
                 ]),
             ),
             (
-                MontyObject::String("path".to_owned()),
-                MontyObject::Path("/tmp/example.txt".to_owned()),
+                MontyObject::string("path"),
+                MontyObject::path("/tmp/example.txt"),
             ),
         ]);
-
-        let decoded = WireValue::from_monty(&original)
-            .into_monty()
-            .expect("wire value should round-trip");
-        assert_eq!(decoded, original);
+        assert_eq!(round_trip(&original), original);
     }
 
     #[test]
-    fn wire_value_round_trips_dataclasses() {
-        let original = MontyObject::Dataclass {
-            name: "Config".to_owned(),
-            type_id: 7,
-            field_names: vec!["enabled".to_owned(), "path".to_owned()],
-            attrs: vec![
-                (
-                    MontyObject::String("enabled".to_owned()),
-                    MontyObject::Bool(true),
-                ),
-                (
-                    MontyObject::String("path".to_owned()),
-                    MontyObject::Path("/config.json".to_owned()),
-                ),
-            ]
-            .into(),
-            frozen: true,
-        };
+    fn wire_value_round_trips_class_instances() {
+        let class_type = MontyObject::class_type(
+            "Config",
+            MontyUuid::from_u128(7),
+            true,
+            true,
+            Vec::<(MontyObject, MontyObject)>::new(),
+        );
+        let original = MontyObject::class_instance(
+            class_type,
+            MontyUuid::from_u128(42),
+            vec![
+                (MontyObject::string("enabled"), MontyObject::bool(true)),
+                (MontyObject::string("path"), MontyObject::path("/config.json")),
+            ],
+        );
 
-        let decoded = WireValue::from_monty(&original)
-            .into_monty()
-            .expect("dataclass should round-trip");
-        assert_eq!(decoded, original);
+        let wire = WireValue::from_monty(&original);
+        assert_eq!(wire.kind, WIRE_VALUE_DATACLASS);
+        assert_eq!(wire.name, "Config");
+        assert_eq!(wire.field_names, vec!["enabled", "path"]);
+        assert!(!wire.sandbox_class);
+        assert!(!wire.plain_class);
+        assert_eq!(wire.into_monty().expect("dataclass should round-trip"), original);
+    }
+
+    #[test]
+    fn wire_value_rejects_dataclass_without_ids() {
+        let error = WireValue {
+            kind: WIRE_VALUE_DATACLASS,
+            name: "Config".to_owned(),
+            ..WireValue::default()
+        }
+        .into_monty()
+        .expect_err("dataclass without ids must be rejected");
+        assert_eq!(error, "dataclass class_id must be 16 bytes, got 0");
     }
 
     #[test]
     fn wire_value_rejects_repr_inputs() {
         let error = WireValue {
-            kind: super::WIRE_VALUE_REPR,
+            kind: WIRE_VALUE_REPR,
             string_value: "<object repr>".to_owned(),
             ..WireValue::default()
         }
@@ -695,35 +727,31 @@ mod tests {
     }
 
     #[test]
-    fn wire_value_round_trips_exceptions() {
-        let original = MontyObject::Exception {
-            exc_type: ExcType::RuntimeError,
-            arg: Some("boom".to_owned()),
-        };
+    fn wire_value_reports_unsupported_outputs_as_repr() {
+        let wire = WireValue::from_monty(&MontyObject::complex(1.0, 2.0));
+        assert_eq!(wire.kind, WIRE_VALUE_REPR);
+        assert_eq!(wire.string_value, "(1+2j)");
+    }
 
-        let decoded = WireValue::from_monty(&original)
-            .into_monty()
-            .expect("exceptions should round-trip");
-        assert_eq!(decoded, original);
+    #[test]
+    fn wire_value_round_trips_exceptions() {
+        let original = MontyObject::exception(ExcType::RuntimeError, Some("boom".to_owned()));
+        assert_eq!(round_trip(&original), original);
     }
 
     #[test]
     fn wire_value_round_trips_date() {
-        let original = MontyObject::Date(MontyDate {
+        let original = MontyObject::date(MontyDate {
             year: 2026,
             month: 3,
             day: 29,
         });
-
-        let decoded = WireValue::from_monty(&original)
-            .into_monty()
-            .expect("date should round-trip");
-        assert_eq!(decoded, original);
+        assert_eq!(round_trip(&original), original);
     }
 
     #[test]
     fn wire_value_round_trips_datetime() {
-        let original = MontyObject::DateTime(MontyDateTime {
+        let original = MontyObject::datetime(MontyDateTime {
             year: 2026,
             month: 3,
             day: 29,
@@ -734,16 +762,12 @@ mod tests {
             offset_seconds: Some(3600),
             timezone_name: Some("UTC+01:00".to_owned()),
         });
-
-        let decoded = WireValue::from_monty(&original)
-            .into_monty()
-            .expect("datetime should round-trip");
-        assert_eq!(decoded, original);
+        assert_eq!(round_trip(&original), original);
     }
 
     #[test]
     fn wire_value_round_trips_naive_datetime() {
-        let original = MontyObject::DateTime(MontyDateTime {
+        let original = MontyObject::datetime(MontyDateTime {
             year: 2026,
             month: 1,
             day: 1,
@@ -754,50 +778,34 @@ mod tests {
             offset_seconds: None,
             timezone_name: None,
         });
-
-        let decoded = WireValue::from_monty(&original)
-            .into_monty()
-            .expect("naive datetime should round-trip");
-        assert_eq!(decoded, original);
+        assert_eq!(round_trip(&original), original);
     }
 
     #[test]
     fn wire_value_round_trips_timedelta() {
-        let original = MontyObject::TimeDelta(MontyTimeDelta {
+        let original = MontyObject::timedelta(MontyTimeDelta {
             days: -1,
             seconds: 3600,
             microseconds: 500_000,
         });
-
-        let decoded = WireValue::from_monty(&original)
-            .into_monty()
-            .expect("timedelta should round-trip");
-        assert_eq!(decoded, original);
+        assert_eq!(round_trip(&original), original);
     }
 
     #[test]
     fn wire_value_round_trips_timezone() {
-        let original = MontyObject::TimeZone(MontyTimeZone {
+        let original = MontyObject::timezone(MontyTimeZone {
             offset_seconds: -18000,
             name: Some("EST".to_owned()),
         });
-
-        let decoded = WireValue::from_monty(&original)
-            .into_monty()
-            .expect("timezone should round-trip");
-        assert_eq!(decoded, original);
+        assert_eq!(round_trip(&original), original);
     }
 
     #[test]
     fn wire_value_round_trips_utc_timezone() {
-        let original = MontyObject::TimeZone(MontyTimeZone {
+        let original = MontyObject::timezone(MontyTimeZone {
             offset_seconds: 0,
             name: None,
         });
-
-        let decoded = WireValue::from_monty(&original)
-            .into_monty()
-            .expect("utc timezone should round-trip");
-        assert_eq!(decoded, original);
+        assert_eq!(round_trip(&original), original);
     }
 }

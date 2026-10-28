@@ -7,7 +7,7 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-const wireVersion = 1
+const wireVersion = 2
 
 const (
 	wireValueNone uint8 = iota
@@ -60,24 +60,22 @@ type wirePair struct {
 }
 
 type wireValue struct {
-	Kind        uint8       `msgpack:"kind"`
-	Bool        bool        `msgpack:"bool,omitempty"`
-	Int         int64       `msgpack:"int,omitempty"`
-	BigInt      string      `msgpack:"big_int,omitempty"`
-	Float       float64     `msgpack:"float,omitempty"`
-	String      string      `msgpack:"string,omitempty"`
-	Bytes       []byte      `msgpack:"bytes,omitempty"`
-	Items       []wireValue `msgpack:"items,omitempty"`
-	TypeName    string      `msgpack:"type_name,omitempty"`
-	FieldNames  []string    `msgpack:"field_names,omitempty"`
-	Values      []wireValue `msgpack:"values,omitempty"`
-	Pairs       []wirePair  `msgpack:"pairs,omitempty"`
-	ExcType     string      `msgpack:"exc_type,omitempty"`
-	Arg         *string     `msgpack:"arg,omitempty"`
-	Name        string      `msgpack:"name,omitempty"`
-	TypeID      uint64      `msgpack:"type_id,omitempty"`
-	Attrs       []wirePair  `msgpack:"attrs,omitempty"`
-	Frozen      bool        `msgpack:"frozen,omitempty"`
+	Kind         uint8       `msgpack:"kind"`
+	Bool         bool        `msgpack:"bool,omitempty"`
+	Int          int64       `msgpack:"int,omitempty"`
+	BigInt       string      `msgpack:"big_int,omitempty"`
+	Float        float64     `msgpack:"float,omitempty"`
+	String       string      `msgpack:"string,omitempty"`
+	Bytes        []byte      `msgpack:"bytes,omitempty"`
+	Items        []wireValue `msgpack:"items,omitempty"`
+	TypeName     string      `msgpack:"type_name,omitempty"`
+	FieldNames   []string    `msgpack:"field_names,omitempty"`
+	Values       []wireValue `msgpack:"values,omitempty"`
+	Pairs        []wirePair  `msgpack:"pairs,omitempty"`
+	ExcType      string      `msgpack:"exc_type,omitempty"`
+	Arg          *string     `msgpack:"arg,omitempty"`
+	Name         string      `msgpack:"name,omitempty"`
+	Attrs        []wirePair  `msgpack:"attrs,omitempty"`
 	Docstring    *string     `msgpack:"docstring,omitempty"`
 	Placeholder  string      `msgpack:"placeholder,omitempty"`
 	Year         int32       `msgpack:"year,omitempty"`
@@ -92,6 +90,10 @@ type wireValue struct {
 	Days         int32       `msgpack:"days,omitempty"`
 	Seconds      int32       `msgpack:"seconds,omitempty"`
 	Microseconds int32       `msgpack:"microseconds,omitempty"`
+	ClassID      []byte      `msgpack:"class_id,omitempty"`
+	InstanceID   []byte      `msgpack:"instance_id,omitempty"`
+	SandboxClass bool        `msgpack:"sandbox_class,omitempty"`
+	PlainClass   bool        `msgpack:"plain_class,omitempty"`
 }
 
 type wireCompileOptions struct {
@@ -104,7 +106,6 @@ type wireCompileOptions struct {
 
 type wireResourceLimits struct {
 	Version           uint32   `msgpack:"version"`
-	MaxAllocations    *int     `msgpack:"max_allocations,omitempty"`
 	MaxDurationSecs   *float64 `msgpack:"max_duration_secs,omitempty"`
 	MaxMemory         *int     `msgpack:"max_memory,omitempty"`
 	GCInterval        *int     `msgpack:"gc_interval,omitempty"`
@@ -115,12 +116,22 @@ type wireStartOptions struct {
 	Version uint32               `msgpack:"version"`
 	Inputs  map[string]wireValue `msgpack:"inputs,omitempty"`
 	Limits  *wireResourceLimits  `msgpack:"limits,omitempty"`
+	Cwd     *string              `msgpack:"cwd,omitempty"`
 }
 
 type wireReplOptions struct {
 	Version    uint32              `msgpack:"version"`
 	ScriptName *string             `msgpack:"script_name,omitempty"`
 	Limits     *wireResourceLimits `msgpack:"limits,omitempty"`
+	Cwd        *string             `msgpack:"cwd,omitempty"`
+}
+
+type wireMountOptions struct {
+	Version         uint32  `msgpack:"version"`
+	VirtualPath     string  `msgpack:"virtual_path"`
+	HostPath        string  `msgpack:"host_path"`
+	Mode            *string `msgpack:"mode,omitempty"`
+	WriteBytesLimit *uint64 `msgpack:"write_bytes_limit,omitempty"`
 }
 
 type wireFeedOptions struct {
@@ -168,6 +179,7 @@ type wireProgressPayload struct {
 	Args           []wireValue `msgpack:"args,omitempty"`
 	Kwargs         []wirePair  `msgpack:"kwargs,omitempty"`
 	CallID         uint32      `msgpack:"call_id,omitempty"`
+	ObjectID       []byte      `msgpack:"object_id,omitempty"`
 	VariableName   string      `msgpack:"variable_name,omitempty"`
 	PendingCallIDs []uint32    `msgpack:"pending_call_ids,omitempty"`
 	Output         *wireValue  `msgpack:"output,omitempty"`
@@ -200,6 +212,7 @@ func newWireStartOptions(opts StartOptions) (wireStartOptions, error) {
 		Version: wireVersion,
 		Inputs:  inputs,
 		Limits:  newWireResourceLimits(opts.Limits),
+		Cwd:     optionalString(opts.Cwd),
 	}, nil
 }
 
@@ -208,6 +221,7 @@ func newWireReplOptions(opts ReplOptions) wireReplOptions {
 		Version:    wireVersion,
 		ScriptName: optionalString(opts.ScriptName),
 		Limits:     newWireResourceLimits(opts.Limits),
+		Cwd:        optionalString(opts.Cwd),
 	}
 }
 
@@ -312,7 +326,6 @@ func newWireResourceLimits(limits *ResourceLimits) *wireResourceLimits {
 	}
 	payload := &wireResourceLimits{
 		Version:           wireVersion,
-		MaxAllocations:    optionalInt(limits.MaxAllocations),
 		MaxMemory:         optionalInt(limits.MaxMemory),
 		GCInterval:        optionalInt(limits.GCInterval),
 		MaxRecursionDepth: optionalInt(limits.MaxRecursionDepth),
@@ -477,18 +490,28 @@ func wireValueFromPublic(value Value) (wireValue, error) {
 	case valueKindPath:
 		return wireValue{Kind: wireValuePath, String: string(value.data.(Path))}, nil
 	case valueKindDataclass:
-		dataclass := value.data.(Dataclass)
+		dataclass := dataclassWithIDs(value.data.(Dataclass))
 		attrs, err := wirePairsFromDict(dataclass.Attrs)
 		if err != nil {
 			return wireValue{}, err
 		}
+		classID, err := parseUUID(dataclass.ClassID)
+		if err != nil {
+			return wireValue{}, fmt.Errorf("dataclass %s class ID: %w", dataclass.Name, err)
+		}
+		instanceID, err := parseUUID(dataclass.InstanceID)
+		if err != nil {
+			return wireValue{}, fmt.Errorf("dataclass %s instance ID: %w", dataclass.Name, err)
+		}
 		return wireValue{
-			Kind:       wireValueDataclass,
-			Name:       dataclass.Name,
-			TypeID:     dataclass.TypeID,
-			FieldNames: append([]string(nil), dataclass.FieldNames...),
-			Attrs:      attrs,
-			Frozen:     dataclass.Frozen,
+			Kind:         wireValueDataclass,
+			Name:         dataclass.Name,
+			FieldNames:   append([]string(nil), dataclass.FieldNames...),
+			Attrs:        attrs,
+			ClassID:      classID,
+			InstanceID:   instanceID,
+			SandboxClass: dataclass.SandboxClass,
+			PlainClass:   dataclass.PlainClass,
 		}, nil
 	case valueKindFunction:
 		function := value.data.(Function)
@@ -615,11 +638,13 @@ func (value wireValue) toPublic() (Value, error) {
 			return Value{}, err
 		}
 		return DataclassValue(Dataclass{
-			Name:       value.Name,
-			TypeID:     value.TypeID,
-			FieldNames: append([]string(nil), value.FieldNames...),
-			Attrs:      attrs,
-			Frozen:     value.Frozen,
+			Name:         value.Name,
+			FieldNames:   append([]string(nil), value.FieldNames...),
+			Attrs:        attrs,
+			ClassID:      uuidFromBytes(value.ClassID),
+			InstanceID:   uuidFromBytes(value.InstanceID),
+			SandboxClass: value.SandboxClass,
+			PlainClass:   value.PlainClass,
 		}), nil
 	case wireValueFunction:
 		return FunctionValue(Function{Name: value.Name, Docstring: value.Docstring}), nil
