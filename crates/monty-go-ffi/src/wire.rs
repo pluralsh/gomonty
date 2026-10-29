@@ -423,10 +423,6 @@ pub struct WireCompileOptions {
     pub script_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub type_check: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub type_check_stubs: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

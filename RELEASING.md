@@ -6,11 +6,13 @@
 dependencies in the root `Cargo.toml`:
 
 - `monty`
-- `monty_type_checking`
+- `monty-types`
+- `monty-fs`
+- `monty-alloc`
 
 To bump the upstream dependency:
 
-1. Update the `rev` for both dependencies in `Cargo.toml`.
+1. Update the `rev` for every upstream dependency in `Cargo.toml`.
 2. Refresh `Cargo.lock` with `cargo update`.
 3. Rebuild the host shared library and run local verification:
 
@@ -25,7 +27,9 @@ dependency, use a temporary Cargo patch:
 ```toml
 [patch."https://github.com/pydantic/monty.git"]
 monty = { path = "../monty/crates/monty" }
-monty_type_checking = { path = "../monty/crates/monty-type-checking" }
+monty-types = { path = "../monty/crates/monty-types" }
+monty-fs = { path = "../monty/crates/monty-fs" }
+monty-alloc = { path = "../monty/crates/monty-alloc" }
 ```
 
 ## Release Workflow

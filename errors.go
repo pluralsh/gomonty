@@ -36,7 +36,7 @@ func (e *baseError) Error() string {
 		return ""
 	}
 	if e.handle != nil {
-		if formatted := e.handle.Display("type-msg", false); formatted != "" {
+		if formatted := e.handle.Display("type-msg"); formatted != "" {
 			return formatted
 		}
 	}
@@ -50,7 +50,7 @@ func (e *baseError) TracebackString() string {
 	if e == nil || e.handle == nil {
 		return ""
 	}
-	return e.handle.Display("traceback", false)
+	return e.handle.Display("traceback")
 }
 
 // SyntaxError is raised for parse or compile failures. Its last frame locates
@@ -64,22 +64,6 @@ type SyntaxError struct {
 type RuntimeError struct {
 	baseError
 	Frames []Frame
-}
-
-// TypingError is raised for static type-check failures and can re-render the
-// diagnostics using the formatter strings supported by Rust.
-type TypingError struct {
-	baseError
-}
-
-// Display renders the typing diagnostics using one of Rust's formatter names:
-// `full`, `concise`, `azure`, `json`, `jsonlines`, `rdjson`, `pylint`,
-// `gitlab`, or `github`.
-func (e *TypingError) Display(format string, color bool) string {
-	if e == nil || e.handle == nil {
-		return e.Error()
-	}
-	return e.handle.Display(format, color)
 }
 
 func newError(err *ffi.Error) error {
@@ -101,8 +85,6 @@ func newError(err *ffi.Error) error {
 	switch summary.Kind {
 	case "syntax":
 		return &SyntaxError{baseError: base, Frames: summary.Traceback}
-	case "typing":
-		return &TypingError{baseError: base}
 	case "runtime", "api":
 		return &RuntimeError{
 			baseError: base,

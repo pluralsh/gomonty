@@ -21,13 +21,11 @@ use std::{
 
 use monty::{
     Dump, MontyRepl, MontyRun, ReplProgress, ReplStartError, RunProgress, Session, SessionRef,
-    type_check_nesting_exception,
 };
-use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CallArgs, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid,
     NameLookupResult, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker,
-    SOURCE_SCAN_THRESHOLD, TypeCheckingConfig, TypeCheckingFormat, validate_cwd,
+    validate_cwd,
 };
 use wire::{
     WIRE_CALL_RESULT_EXCEPTION, WIRE_CALL_RESULT_PENDING, WIRE_CALL_RESULT_RETURN,
@@ -80,52 +78,7 @@ pub struct MontyGoError {
 #[derive(Debug)]
 enum FfiError {
     Exception(MontyException),
-    Typing(TypingFailure),
     Api(String),
-}
-
-/// A failed type check, kept as source so it can be re-rendered in any format.
-///
-/// Upstream diagnostics borrow the checker that produced them, so they cannot
-/// outlive this call; re-running the checker on demand is cheap enough for the
-/// error path.
-#[derive(Debug)]
-struct TypingFailure {
-    rendered: String,
-    code: String,
-    script_name: String,
-    stubs: Option<String>,
-}
-
-const TYPE_STUBS_PATH: &str = "type_stubs.py";
-
-fn run_type_check(
-    code: &str,
-    script_name: &str,
-    stubs: Option<&str>,
-    config: TypeCheckingConfig,
-) -> Result<Option<String>, FfiError> {
-    type_check_nesting_exception(code, script_name, SOURCE_SCAN_THRESHOLD)
-        .map_err(FfiError::Exception)?;
-    let mut checker = TypeChecker::default();
-    let source = SourceFile::new(code, script_name);
-    let stubs = stubs.map(|stubs| SourceFile::new(stubs, TYPE_STUBS_PATH));
-    checker
-        .run(&source, stubs.as_ref(), config)
-        .map(|failure| failure.map(|failure| failure.to_string()))
-        .map_err(FfiError::Api)
-}
-
-fn type_check_source(code: &str, script_name: &str, stubs: Option<&str>) -> Result<(), FfiError> {
-    match run_type_check(code, script_name, stubs, TypeCheckingConfig::default())? {
-        None => Ok(()),
-        Some(rendered) => Err(FfiError::Typing(TypingFailure {
-            rendered,
-            code: code.to_owned(),
-            script_name: script_name.to_owned(),
-            stubs: stubs.map(str::to_owned),
-        })),
-    }
 }
 
 fn ffi_panic_error(payload: Box<dyn Any + Send>) -> FfiError {
@@ -166,16 +119,6 @@ where
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(result) => result,
         Err(payload) => MontyGoOpResult::err(ffi_panic_error(payload), None, String::new()),
-    }
-}
-
-fn catch_error_result<F>(f: F) -> *mut MontyGoError
-where
-    F: FnOnce() -> *mut MontyGoError,
-{
-    match catch_unwind(AssertUnwindSafe(f)) {
-        Ok(result) => result,
-        Err(payload) => new_error(ffi_panic_error(payload)),
     }
 }
 
@@ -438,13 +381,6 @@ impl FfiError {
     fn summary(&self) -> WireErrorSummary {
         match self {
             Self::Exception(error) => WireErrorSummary::from_exception(error),
-            Self::Typing(error) => WireErrorSummary {
-                version: wire::WIRE_VERSION,
-                kind: "typing".to_owned(),
-                type_name: "TypeError".to_owned(),
-                message: error.rendered.clone(),
-                traceback: Vec::new(),
-            },
             Self::Api(message) => WireErrorSummary {
                 version: wire::WIRE_VERSION,
                 kind: "api".to_owned(),
@@ -455,7 +391,7 @@ impl FfiError {
         }
     }
 
-    fn display(&self, format: &str, color: bool) -> Result<String, String> {
+    fn display(&self, format: &str) -> Result<String, String> {
         match self {
             Self::Exception(error) => match format {
                 "traceback" => Ok(error.to_string()),
@@ -463,25 +399,6 @@ impl FfiError {
                 "msg" => Ok(error.message().unwrap_or_default().to_owned()),
                 _ => Err(format!("invalid display format '{format}', {TYPE_MSG_FORMATS}")),
             },
-            Self::Typing(error) if matches!(format, "traceback" | "type-msg" | "msg") => {
-                Ok(error.rendered.clone())
-            }
-            Self::Typing(error) => {
-                let config = TypeCheckingConfig {
-                    format: TypeCheckingFormat::from_name(format)?,
-                    color,
-                };
-                match run_type_check(
-                    &error.code,
-                    &error.script_name,
-                    error.stubs.as_deref(),
-                    config,
-                ) {
-                    Ok(Some(rendered)) => Ok(rendered),
-                    Ok(None) => Ok(error.rendered.clone()),
-                    Err(error) => Err(error.summary().message),
-                }
-            }
             Self::Api(message) => match format {
                 "msg" | "type-msg" | "traceback" => Ok(message.clone()),
                 _ => Err(format!("invalid display format '{format}', {TYPE_MSG_FORMATS}")),
@@ -992,7 +909,6 @@ pub extern "C" fn monty_go_error_json(error: *const MontyGoError, out: *mut Mont
 pub extern "C" fn monty_go_error_display(
     error: *const MontyGoError,
     format: *const c_char,
-    color: bool,
     out: *mut MontyGoBytes,
 ) {
     let bytes = if error.is_null() {
@@ -1002,7 +918,7 @@ pub extern "C" fn monty_go_error_display(
         let error = unsafe { &*error };
         // SAFETY: caller passes a NUL-terminated string or null
         let format = unsafe { string_from_cstr(format) }.unwrap_or("traceback");
-        let rendered = catch_unwind(AssertUnwindSafe(|| error.inner.display(format, color)))
+        let rendered = catch_unwind(AssertUnwindSafe(|| error.inner.display(format)))
             .unwrap_or_else(|payload| Err(ffi_panic_error(payload).summary().message));
         MontyGoBytes::from_vec(rendered.unwrap_or_else(|error| error).into_bytes())
     };
@@ -1034,13 +950,6 @@ pub extern "C" fn monty_go_runner_new(
 
         let script_name = options.script_name.unwrap_or_else(|| "main.py".to_owned());
         let input_names = options.inputs.unwrap_or_default();
-
-        if options.type_check
-            && let Err(error) =
-                type_check_source(&code, &script_name, options.type_check_stubs.as_deref())
-        {
-            return MontyGoRunnerResult::err(error);
-        }
 
         match MontyRun::new(
             code,
@@ -1115,35 +1024,6 @@ pub extern "C" fn monty_go_runner_dump(
         })
         .map_err(|error| FfiError::Api(error.to_string()))
     });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn monty_go_runner_type_check(
-    runner: *const MontyGoRunner,
-    prefix_ptr: *const u8,
-    prefix_len: usize,
-) -> *mut MontyGoError {
-    catch_error_result(|| {
-        if runner.is_null() {
-            return new_error(FfiError::Api("runner handle is null".to_owned()));
-        }
-        // SAFETY: caller passes a valid handle pointer
-        let runner = unsafe { &*runner };
-        // SAFETY: caller passes a valid buffer
-        let prefix = unsafe { slice_from_raw(prefix_ptr, prefix_len) };
-        let prefix = if prefix.is_empty() {
-            None
-        } else {
-            match decode_utf8(prefix, "prefix") {
-                Ok(prefix) => Some(prefix),
-                Err(error) => return new_error(error),
-            }
-        };
-        match type_check_source(runner.runner.code(), &runner.script_name, prefix) {
-            Ok(()) => ptr::null_mut(),
-            Err(error) => new_error(error),
-        }
-    })
 }
 
 #[unsafe(no_mangle)]

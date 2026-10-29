@@ -305,7 +305,10 @@ Monty errors are returned as typed Go errors:
 
 - `*monty.SyntaxError`
 - `*monty.RuntimeError`
-- `*monty.TypingError`
+
+Static type checking is not included: upstream's type checker pulls in
+`ruff_db`/`ty` and vulnerable `zip` versions. Type mistakes surface at runtime
+as Python exceptions.
 
 `SyntaxError.Frames` and `RuntimeError.Frames` carry structured locations; the
 last syntax frame points at the offending source line and column.

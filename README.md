@@ -238,7 +238,6 @@ monty = { path = "../monty/crates/monty" }
 monty-types = { path = "../monty/crates/monty-types" }
 monty-fs = { path = "../monty/crates/monty-fs" }
 monty-alloc = { path = "../monty/crates/monty-alloc" }
-monty-type-checking = { path = "../monty/crates/monty-type-checking" }
 ```
 
 See [`RELEASING.md`](./RELEASING.md) for bumping the upstream pin and for the protected-branch release flow: `make release` opens the release-prep PR, then `make publish-release VERSION=vX.Y.Z` tags merged `main`, creates the GitHub release, and warms the Go module proxy.

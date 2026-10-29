@@ -71,7 +71,7 @@ func (e *Error) JSON() []byte {
 }
 
 // Display returns the stub error message.
-func (e *Error) Display(string, bool) string {
+func (e *Error) Display(string) string {
 	return e.message
 }
 
@@ -88,11 +88,6 @@ func LoadRunner([]byte) RunnerResult {
 // Dump returns an unavailable error on unsupported targets.
 func (*Runner) Dump() ([]byte, *Error) {
 	return nil, unavailableError()
-}
-
-// TypeCheck returns an unavailable error on unsupported targets.
-func (*Runner) TypeCheck([]byte) *Error {
-	return unavailableError()
 }
 
 // Start returns an unavailable error on unsupported targets.

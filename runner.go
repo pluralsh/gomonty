@@ -197,20 +197,6 @@ func (r *Runner) Dump() ([]byte, error) {
 	return data, nil
 }
 
-// TypeCheck runs static type checking on the compiled runner.
-func (r *Runner) TypeCheck(prefix string) error {
-	handle, release, err := r.state.borrow()
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	if ffiErr := handle.TypeCheck([]byte(prefix)); ffiErr != nil {
-		return newError(ffiErr)
-	}
-	return nil
-}
-
 // Start begins low-level runner execution.
 func (r *Runner) Start(ctx context.Context, opts StartOptions) (Progress, error) {
 	return r.start(ctx, opts, nil)

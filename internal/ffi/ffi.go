@@ -71,11 +71,10 @@ type nativeAPI struct {
 	progressFree          func(progress *cProgress)
 	errorFree             func(err *cError)
 	errorJSON             func(err *cError, out *cBytes)
-	errorDisplay          func(err *cError, format *byte, color bool, out *cBytes)
+	errorDisplay          func(err *cError, format *byte, out *cBytes)
 	runnerNew             func(codePtr *byte, codeLen uintptr, optionsPtr *byte, optionsLen uintptr, out *cRunnerResult)
 	runnerLoad            func(dataPtr *byte, dataLen uintptr, out *cRunnerResult)
 	runnerDump            func(runner *cRunner, out *cBytes, errOut **cError)
-	runnerTypeCheck       func(runner *cRunner, prefixPtr *byte, prefixLen uintptr) *cError
 	runnerStart           func(runner *cRunner, optionsPtr *byte, optionsLen uintptr, out *cOpResult)
 	replNew               func(optionsPtr *byte, optionsLen uintptr, out *cReplResult)
 	replLoad              func(dataPtr *byte, dataLen uintptr, out *cReplResult)
@@ -172,7 +171,6 @@ func (a *nativeAPI) register(handle uintptr) error {
 		{"monty_go_runner_new", &a.runnerNew},
 		{"monty_go_runner_load", &a.runnerLoad},
 		{"monty_go_runner_dump", &a.runnerDump},
-		{"monty_go_runner_type_check", &a.runnerTypeCheck},
 		{"monty_go_runner_start", &a.runnerStart},
 		{"monty_go_repl_new", &a.replNew},
 		{"monty_go_repl_load", &a.replLoad},
@@ -426,7 +424,7 @@ func (e *Error) JSON() []byte {
 }
 
 // Display returns a formatted string for the error handle.
-func (e *Error) Display(format string, color bool) string {
+func (e *Error) Display(format string) string {
 	if e == nil {
 		return ""
 	}
@@ -435,7 +433,7 @@ func (e *Error) Display(format string, color bool) string {
 	}
 	formatBytes := cStringBytes(format)
 	var out cBytes
-	api.errorDisplay(e.ptr, unsafe.SliceData(formatBytes), color, &out)
+	api.errorDisplay(e.ptr, unsafe.SliceData(formatBytes), &out)
 	runtime.KeepAlive(formatBytes)
 	return string(takeBytes(out))
 }
@@ -475,17 +473,6 @@ func (r *Runner) Dump() ([]byte, *Error) {
 	var errOut *cError
 	api.runnerDump(r.ptr, &out, &errOut)
 	return takeBytes(out), newError(errOut)
-}
-
-// TypeCheck runs static type checking and returns an owned error handle on failure.
-func (r *Runner) TypeCheck(prefix []byte) *Error {
-	if r == nil || r.ptr == nil {
-		return nil
-	}
-	prefixPtr, prefixLen := byteArgs(prefix)
-	err := api.runnerTypeCheck(r.ptr, prefixPtr, prefixLen)
-	runtime.KeepAlive(prefix)
-	return newError(err)
 }
 
 // Start begins runner execution with JSON-encoded start options.

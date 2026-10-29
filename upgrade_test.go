@@ -220,20 +220,6 @@ func TestDumpLoadRoundTrips(t *testing.T) {
 	assertRawEqual(t, value.Raw(), int64(20))
 }
 
-func TestTypeCheckFailureRendersFormats(t *testing.T) {
-	_, err := New("x: int = 'nope'", CompileOptions{TypeCheck: true})
-	var typingErr *TypingError
-	if !errors.As(err, &typingErr) {
-		t.Fatalf("expected TypingError, got %T %v", err, err)
-	}
-	if !strings.Contains(typingErr.Error(), "invalid-assignment") {
-		t.Fatalf("unexpected typing error: %v", typingErr)
-	}
-	if concise := typingErr.Display("concise", false); !strings.Contains(concise, "main.py:1") {
-		t.Fatalf("unexpected concise rendering: %q", concise)
-	}
-}
-
 func TestSyntaxErrorLocation(t *testing.T) {
 	_, err := New("x = (", CompileOptions{})
 	var syntaxErr *SyntaxError

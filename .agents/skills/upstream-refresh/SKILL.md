@@ -80,13 +80,17 @@ gh api 'repos/pydantic/monty/contents/crates/monty/src/object.rs?ref=main' \
 ## Step 3: Bump the upstream pin
 
 Update every upstream `rev` in the root `Cargo.toml` (`monty`, `monty-types`,
-`monty-fs`, `monty-alloc`, `monty-type-checking`); they must stay aligned:
+`monty-fs`, `monty-alloc`); they must stay aligned:
 
 ```toml
 monty = { git = "https://github.com/pydantic/monty.git", rev = "<full-sha>" }
 monty-types = { git = "https://github.com/pydantic/monty.git", rev = "<full-sha>" }
-# ...same rev for monty-fs, monty-alloc, monty-type-checking
+# ...same rev for monty-fs, monty-alloc
 ```
+
+`monty-type-checking` is deliberately not a dependency: it pulls in
+`ruff_db`/`ty` and `zip` versions with open advisories. Only re-add it once
+upstream ships with `zip` >= 9.0.5, and confirm with `cargo tree -i zip`.
 
 Use the **full 40-character SHA** — Cargo will fail to resolve truncated SHAs.
 Also match upstream's `rust-version`. If `cargo fetch` hits version conflicts,

@@ -223,7 +223,6 @@ void monty_go_error_json(const struct MontyGoError *error, struct MontyGoBytes *
 
 void monty_go_error_display(const struct MontyGoError *error,
                             const char *format,
-                            bool color,
                             struct MontyGoBytes *out);
 
 void monty_go_runner_new(const uint8_t *code_ptr,
@@ -239,10 +238,6 @@ void monty_go_runner_load(const uint8_t *data_ptr,
 void monty_go_runner_dump(const struct MontyGoRunner *runner,
                           struct MontyGoBytes *out,
                           struct MontyGoError **error_out);
-
-struct MontyGoError *monty_go_runner_type_check(const struct MontyGoRunner *runner,
-                                                const uint8_t *prefix_ptr,
-                                                uintptr_t prefix_len);
 
 void monty_go_runner_start(const struct MontyGoRunner *runner,
                            const uint8_t *options_ptr,

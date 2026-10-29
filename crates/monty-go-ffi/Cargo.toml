@@ -21,7 +21,6 @@ monty = { workspace = true }
 monty-types = { workspace = true }
 monty-fs = { workspace = true }
 monty-alloc = { workspace = true }
-monty-type-checking = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rmp-serde = { workspace = true }

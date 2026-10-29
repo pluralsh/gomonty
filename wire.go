@@ -97,11 +97,9 @@ type wireValue struct {
 }
 
 type wireCompileOptions struct {
-	Version        uint32   `msgpack:"version"`
-	ScriptName     *string  `msgpack:"script_name,omitempty"`
-	Inputs         []string `msgpack:"inputs,omitempty"`
-	TypeCheck      bool     `msgpack:"type_check,omitempty"`
-	TypeCheckStubs *string  `msgpack:"type_check_stubs,omitempty"`
+	Version    uint32   `msgpack:"version"`
+	ScriptName *string  `msgpack:"script_name,omitempty"`
+	Inputs     []string `msgpack:"inputs,omitempty"`
 }
 
 type wireResourceLimits struct {
@@ -195,11 +193,9 @@ func unmarshalWire(data []byte, target any) error {
 
 func newWireCompileOptions(opts CompileOptions) wireCompileOptions {
 	return wireCompileOptions{
-		Version:        wireVersion,
-		ScriptName:     optionalString(opts.ScriptName),
-		Inputs:         opts.Inputs,
-		TypeCheck:      opts.TypeCheck,
-		TypeCheckStubs: optionalString(opts.TypeCheckStubs),
+		Version:    wireVersion,
+		ScriptName: optionalString(opts.ScriptName),
+		Inputs:     opts.Inputs,
 	}
 }
 

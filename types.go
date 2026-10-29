@@ -320,10 +320,8 @@ type ResourceLimits struct {
 
 // CompileOptions configures runner compilation.
 type CompileOptions struct {
-	ScriptName     string
-	Inputs         []string
-	TypeCheck      bool
-	TypeCheckStubs string
+	ScriptName string
+	Inputs     []string
 }
 
 // StartOptions configures low-level runner execution.
