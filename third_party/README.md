@@ -9,11 +9,17 @@ Upstream Monty 1.4.0 pins `ruff_db`/`ty_*` to exactly 0.0.14 and
 | Crate | Source | Changes |
 | --- | --- | --- |
 | `ruff_db` 0.0.14 | crates.io (astral-sh/ruff `62914c4`) | `zip` `8.0` -> `9.0.5`; `src/vendored.rs` adapted to zip 9 (same change as astral-sh/ruff#29808) |
-| `ty_vendored` 0.0.14 | crates.io (astral-sh/ruff `62914c4`) | `zip` `8.0` -> `9.0.5` |
-| `monty-typeshed` 1.4.0 | pydantic/monty `4b015dc` (tag 1.4.0) | `zip` `0.6.6` -> `9.0.5`; `build.rs` uses `SimpleFileOptions`; workspace-inherited manifest fields made explicit |
+| `ty_vendored` 0.0.14 | crates.io (astral-sh/ruff `62914c4`) | `zip` `8.0` -> `9.0.5`; reproducible `build.rs` zip |
+| `monty-typeshed` 1.4.0 | pydantic/monty `4b015dc` (tag 1.4.0) | `zip` `0.6.6` -> `9.0.5`; `build.rs` uses `SimpleFileOptions`; reproducible `build.rs` zip; workspace-inherited manifest fields made explicit |
 
 The packaged `Cargo.lock` / `Cargo.toml.orig` files were removed; Cargo does
 not read them for dependencies.
+
+Both `build.rs` scripts zip typeshed into the library with a fixed entry
+timestamp and in sorted file order. zip 9 otherwise stamps entries with the
+build time, and path crates are rebuilt on every CI run, so the libraries
+would never match the checked-in artifacts that `release.yml` verifies. Keep
+both changes when re-vendoring.
 
 ## Removing
 
