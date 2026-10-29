@@ -1,0 +1,165 @@
+name: reproducible
+
+# release.yml only publishes when freshly built libraries match the ones
+# release-prep checked in, byte for byte. This builds every library twice on
+# separate runners with the release-prep commands and fails if they differ.
+
+on:
+  pull_request:
+    paths:
+      - ".cargo/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "third_party/**"
+      - "scripts/build-go-ffi.sh"
+      - ".github/workflows/reproducible.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: build ${{ matrix.name }} (${{ matrix.copy }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [a, b]
+        name: [linux-amd64, linux-arm64, darwin-arm64, windows-amd64]
+        include:
+          - name: linux-amd64
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            artifact_path: internal/ffi/lib/linux_amd64/libmonty_go_ffi.so
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            artifact_path: internal/ffi/lib/linux_arm64/libmonty_go_ffi.so
+          - name: darwin-arm64
+            runner: macos-14
+            rust_target: aarch64-apple-darwin
+            artifact_path: internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib
+          - name: windows-amd64
+            runner: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            artifact_path: internal/ffi/lib/windows_amd64/monty_go_ffi.dll
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.copy }}
+          cache-on-failure: true
+
+      - name: Build shared library
+        shell: bash
+        run: |
+          export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          MONTY_GO_FFI_SKIP_HEADER=1 scripts/build-go-ffi.sh "${{ matrix.rust_target }}"
+
+      - name: Hash shared library
+        shell: bash
+        run: |
+          python -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' \
+            "${{ matrix.artifact_path }}" | tee hash.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-${{ matrix.name }}-${{ matrix.copy }}
+          path: hash.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lib-${{ matrix.name }}-${{ matrix.copy }}
+          path: ${{ matrix.artifact_path }}
+          retention-days: 3
+
+  musl:
+    name: build ${{ matrix.name }} (${{ matrix.copy }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [a, b]
+        name: [linux-amd64-musl, linux-arm64-musl]
+        include:
+          - name: linux-amd64-musl
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
+            artifact_path: internal/ffi/lib/linux_amd64_musl/libmonty_go_ffi.so
+          - name: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+            artifact_path: internal/ffi/lib/linux_arm64_musl/libmonty_go_ffi.so
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build shared library in musl container
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            -e RUST_TARGET="${{ matrix.rust_target }}" \
+            rust:1.96-alpine3.21 \
+            sh -c '
+              set -eux
+              apk add --no-cache bash build-base python3
+              host="$(rustc -vV | sed -n "s/^host: //p")"
+              test "$host" = "$RUST_TARGET"
+              export PYO3_PYTHON="$(command -v python3)"
+              export MONTY_GO_FFI_MUSL_NATIVE=1
+              MONTY_GO_FFI_SKIP_HEADER=1 bash scripts/build-go-ffi.sh "$RUST_TARGET"
+            '
+
+      - name: Hash shared library
+        shell: bash
+        run: sha256sum "${{ matrix.artifact_path }}" | cut -d' ' -f1 | tee hash.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-${{ matrix.name }}-${{ matrix.copy }}
+          path: hash.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lib-${{ matrix.name }}-${{ matrix.copy }}
+          path: ${{ matrix.artifact_path }}
+          retention-days: 3
+
+  compare:
+    runs-on: ubuntu-latest
+    needs: [native, musl]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hash-*
+          path: hashes
+
+      - name: Compare builds
+        shell: bash
+        run: |
+          status=0
+          for name in linux-amd64 linux-arm64 darwin-arm64 windows-amd64 linux-amd64-musl linux-arm64-musl; do
+            a="$(cat "hashes/hash-$name-a/hash.txt")"
+            b="$(cat "hashes/hash-$name-b/hash.txt")"
+            if [ "$a" = "$b" ]; then
+              echo "ok       $name $a"
+            else
+              echo "MISMATCH $name $a != $b"
+              status=1
+            fi
+          done
+          exit $status
