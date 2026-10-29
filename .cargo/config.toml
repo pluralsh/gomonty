@@ -1,0 +1,5 @@
+# release.yml rebuilds every shared library and requires it to match the
+# checked-in one byte for byte. /Brepro makes link.exe derive the PE timestamp
+# and the CodeView GUID from the output instead of the clock.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/Brepro"]
