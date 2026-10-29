@@ -5,7 +5,7 @@ exclude = ["third_party"]
 
 [workspace.package]
 edition = "2024"
-version = "0.0.14"
+version = "0.1.0"
 rust-version = "1.96"
 license = "MIT"
 authors = ["Eric Hauser"]
