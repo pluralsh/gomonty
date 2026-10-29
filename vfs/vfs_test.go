@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ewhauser/gomonty"
+	"github.com/pluralsh/gomonty"
 )
 
 func TestMemoryFSReadWriteRename(t *testing.T) {

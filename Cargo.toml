@@ -11,9 +11,9 @@ license = "MIT"
 authors = ["Eric Hauser"]
 categories = ["compilers", "emulators", "development-tools"]
 keywords = ["python", "interpreter", "sandbox", "embedded", "go"]
-homepage = "https://github.com/ewhauser/gomonty"
-repository = "https://github.com/ewhauser/gomonty"
-documentation = "https://github.com/ewhauser/gomonty"
+homepage = "https://github.com/pluralsh/gomonty"
+repository = "https://github.com/pluralsh/gomonty"
+documentation = "https://github.com/pluralsh/gomonty"
 
 [profile.release]
 lto = "fat"

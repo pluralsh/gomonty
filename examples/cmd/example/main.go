@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	monty "github.com/ewhauser/gomonty"
+	monty "github.com/pluralsh/gomonty"
 )
 
 func main() {

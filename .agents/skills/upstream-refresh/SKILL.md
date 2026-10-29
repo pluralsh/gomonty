@@ -290,12 +290,12 @@ CGO_ENABLED=0 go test ./...
 Create a feature branch, commit all changes (including `Cargo.lock` and the locally-rebuilt shared library), push, and open a PR:
 
 ```bash
-git checkout -b ewhauser/<descriptive-branch-name>
+git checkout -b <user>/<descriptive-branch-name>
 git add Cargo.lock Cargo.toml crates/monty-go-ffi/src/wire.rs \
   internal/ffi/lib/darwin_arm64/libmonty_go_ffi.dylib \
   types.go types_test.go wire.go
 git commit -m "Support upstream <feature> types ..."
-git push -u origin ewhauser/<branch-name>
+git push -u origin <user>/<branch-name>
 gh pr create --title "..." --body "..."
 ```
 
