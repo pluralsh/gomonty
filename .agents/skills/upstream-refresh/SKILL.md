@@ -333,6 +333,7 @@ release assets. The release assets remain optional convenience copies.
 
 ## Common pitfalls
 
+- **Vendored zip patches**: `third_party/` holds patched `ruff_db`, `ty_vendored`, and `monty-typeshed` that move off vulnerable `zip` versions. On every pin bump, follow `third_party/README.md`: drop them once upstream uses `zip` >= 9.0.5, otherwise re-vendor at the newly pinned versions. Watch for "patch ... was not used in the crate graph" and verify with `cargo tree -i zip`.
 - **Truncated SHA**: Always use the full 40-char commit SHA in `Cargo.toml`. The GitHub API list endpoint returns truncated SHAs — use `gh api repos/pydantic/monty/commits/<short-sha> --jq .sha` to get the full one.
 - **Duplicate helpers**: Before adding `is_zero_*` functions in `wire.rs`, check if one already exists — the compiler will reject duplicates.
 - **Wire constant ordering**: Go uses `iota` so constants must be in the same order as the Rust numeric values. Never renumber existing constants.

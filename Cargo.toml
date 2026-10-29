@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/monty-go-ffi"]
+exclude = ["third_party"]
 
 [workspace.package]
 edition = "2024"
@@ -33,6 +34,17 @@ serde_bytes = "0.11"
 minicbor-serde = { version = "0.7", default-features = false, features = ["alloc"] }
 num-bigint = { version = "0.4", features = ["serde"] }
 pretty_assertions = "1.4"
+
+# Upstream ruff_db/ty_vendored 0.0.14 and monty-typeshed 1.4.0 depend on zip
+# 0.6/8.x, which are affected by GHSA zip cloaking (fixed in zip 9.0.5). These
+# vendored copies only bump zip to 9.x (see third_party/README.md). Remove once
+# upstream Monty ships with zip >= 9.0.5.
+[patch.crates-io]
+ruff_db = { path = "third_party/ruff_db" }
+ty_vendored = { path = "third_party/ty_vendored" }
+
+[patch."https://github.com/pydantic/monty.git"]
+monty-typeshed = { path = "third_party/monty-typeshed" }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)'] }
