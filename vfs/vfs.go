@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/ewhauser/gomonty"
+	"github.com/pluralsh/gomonty"
 )
 
 // FileSystem is the typed OS surface expected by the Monty Go bindings.

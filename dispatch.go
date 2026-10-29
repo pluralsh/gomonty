@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ewhauser/gomonty/internal/ffi"
+	"github.com/pluralsh/gomonty/internal/ffi"
 )
 
 type dispatchConfig struct {

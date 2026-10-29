@@ -3,7 +3,7 @@ package monty
 import (
 	"sync"
 
-	"github.com/ewhauser/gomonty/internal/ffi"
+	"github.com/pluralsh/gomonty/internal/ffi"
 )
 
 // MountMode controls how sandboxed code may access a mounted host directory.

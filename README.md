@@ -2,12 +2,14 @@
 
 `gomonty` is an experimental standalone repository for the Go bindings to [Monty](https://github.com/pydantic/monty). The Go package keeps the copied binding API and package name `monty`, while the Rust FFI crate is split out so it can build against upstream Monty through pinned Cargo git dependencies.
 
-Documentation: https://pkg.go.dev/github.com/ewhauser/gomonty
+Documentation: https://pkg.go.dev/github.com/pluralsh/gomonty
+
+Maintained by Plural as a fork of [ewhauser/gomonty](https://github.com/ewhauser/gomonty). Consumers of `github.com/ewhauser/gomonty` should switch their imports to `github.com/pluralsh/gomonty`.
 
 ## Status
 
 - Experimental.
-- Go module path: `github.com/ewhauser/gomonty`
+- Go module path: `github.com/pluralsh/gomonty`
 - Go bindings are cgo-free and use `purego` with bundled shared libraries
 - Rust FFI crate: `crates/monty-go-ffi`
 - Upstream Monty source: pinned in the root [`Cargo.toml`](./Cargo.toml)
@@ -72,13 +74,13 @@ target platform.
 Add the module:
 
 ```bash
-go get github.com/ewhauser/gomonty@latest
+go get github.com/pluralsh/gomonty@latest
 ```
 
 Or in `go.mod`:
 
 ```go
-require github.com/ewhauser/gomonty vX.Y.Z
+require github.com/pluralsh/gomonty vX.Y.Z
 ```
 
 Then import and use it:
@@ -91,7 +93,7 @@ import (
 	"fmt"
 	"log"
 
-	monty "github.com/ewhauser/gomonty"
+	monty "github.com/pluralsh/gomonty"
 )
 
 func main() {
