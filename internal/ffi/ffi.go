@@ -24,6 +24,18 @@ type cRunner struct{}
 type cRepl struct{}
 type cProgress struct{}
 type cError struct{}
+type cMount struct{}
+type cMountTable struct{}
+
+type cMountResult struct {
+	mount *cMount
+	err   *cError
+}
+
+type cMountTableResult struct {
+	table *cMountTable
+	err   *cError
+}
 
 type cBytes struct {
 	ptr *byte
@@ -76,6 +88,11 @@ type nativeAPI struct {
 	progressResumeCall    func(progress *cProgress, resultPtr *byte, resultLen uintptr, out *cOpResult)
 	progressResumeLookup  func(progress *cProgress, resultPtr *byte, resultLen uintptr, out *cOpResult)
 	progressResumeFutures func(progress *cProgress, resultPtr *byte, resultLen uintptr, out *cOpResult)
+	progressResumeOS      func(progress *cProgress, table *cMountTable, defaultOnMiss bool, handled *bool, out *cOpResult)
+	mountNew              func(optionsPtr *byte, optionsLen uintptr, out *cMountResult)
+	mountFree             func(mount *cMount)
+	mountTableNew         func(mountsPtr **cMount, mountsLen uintptr, out *cMountTableResult)
+	mountTableFree        func(table *cMountTable)
 }
 
 var api nativeAPI
@@ -168,6 +185,11 @@ func (a *nativeAPI) register(handle uintptr) error {
 		{"monty_go_progress_resume_call", &a.progressResumeCall},
 		{"monty_go_progress_resume_lookup", &a.progressResumeLookup},
 		{"monty_go_progress_resume_futures", &a.progressResumeFutures},
+		{"monty_go_progress_resume_os", &a.progressResumeOS},
+		{"monty_go_mount_new", &a.mountNew},
+		{"monty_go_mount_free", &a.mountFree},
+		{"monty_go_mount_table_new", &a.mountTableNew},
+		{"monty_go_mount_table_free", &a.mountTableFree},
 	} {
 		if err := registerLibraryFunc(handle, binding.name, binding.dst); err != nil {
 			return err
@@ -262,7 +284,7 @@ func unavailableError(err error) *Error {
 
 func syntheticErrorJSON(message string) []byte {
 	payload := map[string]any{
-		"version":   1,
+		"version":   2,
 		"kind":      "api",
 		"type_name": "RuntimeError",
 		"message":   message,
@@ -605,4 +627,108 @@ func (p *Progress) ResumeFutures(result []byte) OpResult {
 	api.progressResumeFutures(p.ptr, resultPtr, resultLen, &out)
 	runtime.KeepAlive(result)
 	return opResultFromC(out)
+}
+
+// ResumeOS answers an OS-call progress handle from a mount table, which may
+// be nil. It reports false, leaving the progress untouched, when no mount
+// covers the call and defaultOnMiss is false. With defaultOnMiss, unhandled
+// calls raise Monty's no-handler error (PermissionError for filesystem calls).
+func (p *Progress) ResumeOS(table *MountTable, defaultOnMiss bool) (OpResult, bool) {
+	if p == nil || p.ptr == nil {
+		return OpResult{}, false
+	}
+	var tablePtr *cMountTable
+	if table != nil {
+		tablePtr = table.ptr
+	}
+	var handled bool
+	var out cOpResult
+	api.progressResumeOS(p.ptr, tablePtr, defaultOnMiss, &handled, &out)
+	runtime.KeepAlive(table)
+	return opResultFromC(out), handled
+}
+
+// Mount is an owned handle for an opened host directory mount.
+type Mount struct {
+	ptr *cMount
+}
+
+// MountResult wraps mount construction results.
+type MountResult struct {
+	Mount *Mount
+	Error *Error
+}
+
+// NewMount opens a host directory mount from serialized options.
+func NewMount(options []byte) MountResult {
+	if err := ensureLoaded(); err != nil {
+		return MountResult{Error: unavailableError(err)}
+	}
+	optionsPtr, optionsLen := byteArgs(options)
+	var result cMountResult
+	api.mountNew(optionsPtr, optionsLen, &result)
+	runtime.KeepAlive(options)
+	var mount *Mount
+	if result.mount != nil {
+		mount = &Mount{ptr: result.mount}
+		runtime.SetFinalizer(mount, (*Mount).Close)
+	}
+	return MountResult{Mount: mount, Error: newError(result.err)}
+}
+
+// Close frees the owned mount handle.
+func (m *Mount) Close() {
+	if m == nil || m.ptr == nil {
+		return
+	}
+	api.mountFree(m.ptr)
+	m.ptr = nil
+}
+
+// MountTable is an owned handle for the mounts of one run or feed.
+type MountTable struct {
+	ptr *cMountTable
+}
+
+// MountTableResult wraps mount table construction results.
+type MountTableResult struct {
+	Table *MountTable
+	Error *Error
+}
+
+// NewMountTable builds a fresh mount table from open mounts. Overlay writes
+// and write budgets are scoped to the returned table.
+func NewMountTable(mounts []*Mount) MountTableResult {
+	if err := ensureLoaded(); err != nil {
+		return MountTableResult{Error: unavailableError(err)}
+	}
+	ptrs := make([]*cMount, 0, len(mounts))
+	for _, mount := range mounts {
+		if mount != nil && mount.ptr != nil {
+			ptrs = append(ptrs, mount.ptr)
+		}
+	}
+	var mountsPtr **cMount
+	if len(ptrs) > 0 {
+		mountsPtr = unsafe.SliceData(ptrs)
+	}
+	var result cMountTableResult
+	api.mountTableNew(mountsPtr, uintptr(len(ptrs)), &result)
+	runtime.KeepAlive(mounts)
+	runtime.KeepAlive(ptrs)
+	var table *MountTable
+	if result.table != nil {
+		table = &MountTable{ptr: result.table}
+		runtime.SetFinalizer(table, (*MountTable).Close)
+	}
+	return MountTableResult{Table: table, Error: newError(result.err)}
+}
+
+// Close frees the owned mount table handle.
+func (t *MountTable) Close() {
+	if t == nil || t.ptr == nil {
+		return
+	}
+	api.mountTableFree(t.ptr)
+	t.ptr = nil
 }

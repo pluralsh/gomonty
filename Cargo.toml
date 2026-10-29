@@ -5,7 +5,7 @@ members = ["crates/monty-go-ffi"]
 [workspace.package]
 edition = "2024"
 version = "0.0.14"
-rust-version = "1.90"
+rust-version = "1.96"
 license = "MIT"
 authors = ["Eric Hauser"]
 categories = ["compilers", "emulators", "development-tools"]
@@ -20,13 +20,17 @@ codegen-units = 1
 strip = true
 
 [workspace.dependencies]
-# Upstream Monty pin. Keep both rev values aligned when bumping.
-monty = { git = "https://github.com/pydantic/monty.git", rev = "c9802b5f30d11fecf9f153feb1dfdab3abda070e" }
-monty_type_checking = { git = "https://github.com/pydantic/monty.git", package = "monty_type_checking", rev = "c9802b5f30d11fecf9f153feb1dfdab3abda070e" }
+# Upstream Monty pin (tag 1.4.0). Keep every rev value aligned when bumping.
+monty = { git = "https://github.com/pydantic/monty.git", rev = "4b015dc4a1e08394b0a98e0255ed8c81de1fbbf6" }
+monty-types = { git = "https://github.com/pydantic/monty.git", rev = "4b015dc4a1e08394b0a98e0255ed8c81de1fbbf6" }
+monty-fs = { git = "https://github.com/pydantic/monty.git", rev = "4b015dc4a1e08394b0a98e0255ed8c81de1fbbf6" }
+monty-alloc = { git = "https://github.com/pydantic/monty.git", rev = "4b015dc4a1e08394b0a98e0255ed8c81de1fbbf6" }
+monty-type-checking = { git = "https://github.com/pydantic/monty.git", rev = "4b015dc4a1e08394b0a98e0255ed8c81de1fbbf6" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rmp-serde = "1.3"
-postcard = { version = "1.1", features = ["alloc"] }
+serde_bytes = "0.11"
+minicbor-serde = { version = "0.7", default-features = false, features = ["alloc"] }
 num-bigint = { version = "0.4", features = ["serde"] }
 pretty_assertions = "1.4"
 

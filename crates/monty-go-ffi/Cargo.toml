@@ -18,11 +18,15 @@ crate-type = ["cdylib"]
 
 [dependencies]
 monty = { workspace = true }
-monty_type_checking = { workspace = true }
+monty-types = { workspace = true }
+monty-fs = { workspace = true }
+monty-alloc = { workspace = true }
+monty-type-checking = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rmp-serde = { workspace = true }
-postcard = { workspace = true }
+serde_bytes = { workspace = true }
+minicbor-serde = { workspace = true }
 num-bigint = { workspace = true }
 
 [dev-dependencies]

@@ -32,6 +32,9 @@ type Progress interface {
 }
 
 // Snapshot is a paused external function, method call, or OS call.
+//
+// For method calls, Args holds only the explicit arguments and ObjectID is
+// the receiver's Dataclass.InstanceID.
 type Snapshot struct {
 	progressBase
 	FunctionName string
@@ -40,6 +43,7 @@ type Snapshot struct {
 	CallID       uint32
 	IsOSFunction bool
 	IsMethodCall bool
+	ObjectID     string
 }
 
 // NameLookupSnapshot is a paused unresolved-name lookup.
@@ -108,6 +112,17 @@ func LoadRunner(data []byte) (*Runner, error) {
 	}
 	return &Runner{
 		state: &runnerState{handle: result.Runner},
+	}, nil
+}
+
+// LoadRepl restores a REPL session serialized by Repl.Dump.
+func LoadRepl(data []byte) (*Repl, error) {
+	result := ffi.LoadRepl(data)
+	if result.Error != nil {
+		return nil, newError(result.Error)
+	}
+	return &Repl{
+		state: &replState{handle: result.Repl},
 	}, nil
 }
 
@@ -227,9 +242,17 @@ func (r *Runner) start(ctx context.Context, opts StartOptions, print PrintCallba
 
 // Run executes the runner through the high-level host callback loop.
 func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
+	mounts, err := newMountTable(opts.Mounts)
+	if err != nil {
+		return Value{}, err
+	}
+	defer mounts.Close()
+
+	objects := newHostObjects()
 	progress, err := r.start(ctx, StartOptions{
-		Inputs: opts.Inputs,
+		Inputs: objects.prepareMap(opts.Inputs),
 		Limits: opts.Limits,
+		Cwd:    opts.Cwd,
 	}, opts.Print)
 	if err != nil {
 		return Value{}, err
@@ -238,7 +261,24 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (Value, error) {
 		functions: opts.Functions,
 		os:        opts.OS,
 		print:     opts.Print,
+		mounts:    mounts,
+		objects:   objects,
 	})
+}
+
+// Close releases the runner's native handle.
+func (r *Runner) Close() error {
+	if r == nil || r.state == nil {
+		return nil
+	}
+	if !r.state.mu.TryLock() {
+		return ErrConcurrentUse
+	}
+	handle := r.state.handle
+	r.state.handle = nil
+	r.state.mu.Unlock()
+	handle.Close()
+	return nil
 }
 
 // Dump serializes the REPL session.
@@ -272,6 +312,7 @@ func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions
 
 	wireOptions, err := newWireFeedOptions(opts)
 	if err != nil {
+		r.state.restore(handle)
 		return nil, err
 	}
 
@@ -292,7 +333,14 @@ func (r *Repl) feedStart(ctx context.Context, code string, opts FeedStartOptions
 
 // FeedRun executes a REPL snippet through the high-level host callback loop.
 func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Value, error) {
-	progress, err := r.feedStart(ctx, code, FeedStartOptions{Inputs: opts.Inputs}, opts.Print)
+	mounts, err := newMountTable(opts.Mounts)
+	if err != nil {
+		return Value{}, err
+	}
+	defer mounts.Close()
+
+	objects := newHostObjects()
+	progress, err := r.feedStart(ctx, code, FeedStartOptions{Inputs: objects.prepareMap(opts.Inputs)}, opts.Print)
 	if err != nil {
 		return Value{}, err
 	}
@@ -300,7 +348,29 @@ func (r *Repl) FeedRun(ctx context.Context, code string, opts FeedOptions) (Valu
 		functions: opts.Functions,
 		os:        opts.OS,
 		print:     opts.Print,
+		mounts:    mounts,
+		objects:   objects,
 	})
+}
+
+// Close releases the REPL's native handle. It returns ErrConcurrentUse while
+// a snippet is executing.
+func (r *Repl) Close() error {
+	if r == nil || r.state == nil {
+		return nil
+	}
+	if !r.state.mu.TryLock() {
+		return ErrConcurrentUse
+	}
+	if r.state.inFlight {
+		r.state.mu.Unlock()
+		return ErrConcurrentUse
+	}
+	handle := r.state.handle
+	r.state.handle = nil
+	r.state.mu.Unlock()
+	handle.Close()
+	return nil
 }
 
 // Dump serializes the current snapshot.
@@ -477,6 +547,31 @@ func (b *progressBase) resumeFutures(ctx context.Context, payload []byte, print 
 	defer handle.Close()
 
 	return consumeOpResult(handle.ResumeFutures(payload), owner, print)
+}
+
+// resumeOS answers an OS-call snapshot from mounts (which may be nil). It
+// reports false, leaving the snapshot untouched, when no mount covers the
+// call and defaultOnMiss is false, or when it fails before resuming.
+func (b *progressBase) resumeOS(ctx context.Context, mounts *ffi.MountTable, defaultOnMiss bool, print PrintCallback) (Progress, bool, error) {
+	handle, release, err := b.state.borrow()
+	if err != nil {
+		return nil, false, err
+	}
+	result, handled := handle.ResumeOS(mounts, defaultOnMiss)
+	if !handled {
+		release()
+		if result.Error != nil {
+			return nil, false, newError(result.Error)
+		}
+		return nil, false, nil
+	}
+	b.state.handle = nil
+	owner := b.state.owner
+	release()
+	defer handle.Close()
+
+	progress, err := consumeOpResult(result, owner, print)
+	return progress, true, err
 }
 
 func (b *progressBase) restoreOwner() error {
@@ -676,6 +771,7 @@ func progressFromResult(handle *ffi.Progress, payload []byte, owner *replState) 
 			CallID:       desc.CallID,
 			IsOSFunction: desc.IsOSFunction,
 			IsMethodCall: desc.IsMethodCall,
+			ObjectID:     uuidFromBytes(desc.ObjectID),
 		}, nil
 	case wireProgressNameLookup:
 		return &NameLookupSnapshot{

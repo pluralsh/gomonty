@@ -51,6 +51,11 @@ Requirements:
 
 For repeat builds where the checked-in header does not need to change, set `MONTY_GO_FFI_SKIP_HEADER=1`.
 
+The script copies the library from `./target/<triple>/release`. If
+`CARGO_TARGET_DIR` points elsewhere, copy
+`$CARGO_TARGET_DIR/<triple>/release/libmonty_go_ffi.*` into
+`internal/ffi/lib/<target>` yourself, otherwise a stale build may be picked up.
+
 For Alpine or another musl-based Linux environment:
 
 ```bash
@@ -230,7 +235,10 @@ The default build uses pinned git dependencies on `https://github.com/pydantic/m
 ```toml
 [patch."https://github.com/pydantic/monty.git"]
 monty = { path = "../monty/crates/monty" }
-monty_type_checking = { path = "../monty/crates/monty-type-checking" }
+monty-types = { path = "../monty/crates/monty-types" }
+monty-fs = { path = "../monty/crates/monty-fs" }
+monty-alloc = { path = "../monty/crates/monty-alloc" }
+monty-type-checking = { path = "../monty/crates/monty-type-checking" }
 ```
 
 See [`RELEASING.md`](./RELEASING.md) for bumping the upstream pin and for the protected-branch release flow: `make release` opens the release-prep PR, then `make publish-release VERSION=vX.Y.Z` tags merged `main`, creates the GitHub release, and warms the Go module proxy.
